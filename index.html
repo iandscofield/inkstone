@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Pro</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23d93025'/><text x='16' y='22' font-family='Arial' font-weight='bold' font-size='13' fill='white' text-anchor='middle'>PDF</text></svg>" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="logo">PDF</span> Pro</div>
+      <div class="group">
+        <button data-cmd="open" title="Open (Ctrl+O)">📂 Open</button>
+        <button data-cmd="save" title="Save (Ctrl+S)" data-needs-doc>💾 Save</button>
+        <button data-cmd="saveAs" title="Save as (Ctrl+Shift+S)" data-needs-doc>Save As</button>
+        <button data-cmd="print" title="Print (Ctrl+P)" data-needs-doc>🖨️</button>
+      </div>
+      <div class="group">
+        <button data-cmd="undo" title="Undo (Ctrl+Z)" data-needs-doc>↶</button>
+        <button data-cmd="redo" title="Redo (Ctrl+Y)" data-needs-doc>↷</button>
+      </div>
+      <div class="group">
+        <button data-cmd="prevPage" title="Previous page" data-needs-doc>▲</button>
+        <input id="pageInput" type="text" value="0" size="3" data-needs-doc />
+        <span id="pageCount">/ 0</span>
+        <button data-cmd="nextPage" title="Next page" data-needs-doc>▼</button>
+      </div>
+      <div class="group">
+        <button data-cmd="zoomOut" title="Zoom out (Ctrl+-)" data-needs-doc>−</button>
+        <select id="zoomSelect" data-needs-doc>
+          <option value="fit-width">Fit width</option>
+          <option value="fit-page">Fit page</option>
+          <option value="0.5">50%</option>
+          <option value="0.75">75%</option>
+          <option value="1">100%</option>
+          <option value="1.25">125%</option>
+          <option value="1.5">150%</option>
+          <option value="2">200%</option>
+          <option value="3">300%</option>
+          <option value="custom" hidden>Custom</option>
+        </select>
+        <button data-cmd="zoomIn" title="Zoom in (Ctrl+=)" data-needs-doc>+</button>
+      </div>
+      <div class="group search">
+        <input id="searchInput" type="search" placeholder="Find in document (Ctrl+F)" data-needs-doc />
+        <span id="searchStatus"></span>
+        <button data-cmd="searchPrev" title="Previous match" data-needs-doc>‹</button>
+        <button data-cmd="searchNext" title="Next match" data-needs-doc>›</button>
+      </div>
+      <div class="spacer"></div>
+      <button data-cmd="toggleTheme" title="Toggle dark mode">🌓</button>
+    </header>
+
+    <nav class="toolbar" id="toolbar">
+      <button data-tool="select" class="active" title="Select text and annotations (V)">↖ Select</button>
+      <button data-tool="pan" title="Hand / pan (H)">✋</button>
+      <span class="sep"></span>
+      <button data-tool="edittext" title="Edit existing text (E)">✎ Edit Text</button>
+      <button data-tool="text" title="Add text box (T)">T Text</button>
+      <button data-tool="highlight" title="Highlight area (or select text, then press Ctrl+H)">🖍 Highlight</button>
+      <button data-tool="underline" title="Underline / strikeout area">U̲ Underline</button>
+      <button data-tool="ink" title="Freehand draw (D)">✏️ Draw</button>
+      <button data-tool="rect" title="Rectangle (R)">▭</button>
+      <button data-tool="ellipse" title="Ellipse (O)">◯</button>
+      <button data-tool="line" title="Line (L)">╱</button>
+      <button data-tool="arrow" title="Arrow (A)">➚</button>
+      <button data-tool="note" title="Sticky note comment (N)">🗨 Note</button>
+      <span class="sep"></span>
+      <button data-cmd="stampMenu" title="Stamp">🔖 Stamp</button>
+      <button data-cmd="signature" title="Fill &amp; sign">✍️ Sign</button>
+      <button data-cmd="insertImage" title="Insert image">🖼 Image</button>
+      <span class="sep"></span>
+      <button data-tool="whiteout" title="White-out (cover content)">⬜ Whiteout</button>
+      <button data-tool="redact" title="Mark for redaction">⬛ Redact</button>
+      <span class="sep"></span>
+      <button data-tool="field-text" title="Add form text field">⌨ Field</button>
+      <button data-tool="field-check" title="Add form checkbox">☑ Checkbox</button>
+      <span class="sep"></span>
+      <label title="Color">🎨 <input type="color" id="colorInput" value="#d93025" /></label>
+      <label title="Stroke width">
+        <select id="widthInput">
+          <option value="1">1pt</option>
+          <option value="2" selected>2pt</option>
+          <option value="3">3pt</option>
+          <option value="5">5pt</option>
+          <option value="8">8pt</option>
+        </select>
+      </label>
+      <label title="Font size">
+        <select id="fontSizeInput">
+          <option>8</option><option>10</option><option selected>12</option><option>14</option>
+          <option>18</option><option>24</option><option>36</option><option>48</option>
+        </select>
+      </label>
+    </nav>
+
+    <div class="workspace">
+      <aside class="sidebar" id="sidebar">
+        <div class="tabs">
+          <button data-tab="pages" class="active">Pages</button>
+          <button data-tab="outline">Bookmarks</button>
+          <button data-tab="comments">Comments</button>
+        </div>
+        <div class="tab-body" data-tab-body="pages">
+          <div class="thumb-actions">
+            <button data-cmd="rotateLeft" title="Rotate selected left" data-needs-doc>⟲</button>
+            <button data-cmd="rotateRight" title="Rotate selected right" data-needs-doc>⟳</button>
+            <button data-cmd="deletePages" title="Delete selected pages" data-needs-doc>🗑</button>
+            <button data-cmd="extractPages" title="Extract selected pages" data-needs-doc>⤴</button>
+            <button data-cmd="insertBlank" title="Insert blank page after" data-needs-doc>＋</button>
+          </div>
+          <div id="thumbs" class="thumbs"></div>
+        </div>
+        <div class="tab-body" data-tab-body="outline" hidden><div id="outline" class="outline"></div></div>
+        <div class="tab-body" data-tab-body="comments" hidden><div id="comments" class="comments"></div></div>
+      </aside>
+
+      <main class="viewer-wrap" id="viewerWrap">
+        <div id="viewer" class="viewer"></div>
+        <div id="dropHint" class="drop-hint">
+          <div class="drop-card">
+            <div class="big">📄</div>
+            <h1>PDF Pro</h1>
+            <p>Free &amp; open source PDF editor. Everything runs locally in your browser — files never leave your computer.</p>
+            <button class="primary" data-cmd="open">Open a PDF</button>
+            <button data-cmd="newBlank">Create blank PDF</button>
+            <p class="muted">…or drag &amp; drop PDF or image files here</p>
+          </div>
+        </div>
+      </main>
+
+      <aside class="panel" id="panel">
+        <section id="propsSection" hidden>
+          <h3>Selected annotation</h3>
+          <div id="props"></div>
+        </section>
+        <section>
+          <h3>Organize pages</h3>
+          <button data-cmd="merge" data-needs-doc>Combine / insert files…</button>
+          <button data-cmd="split" data-needs-doc>Split document…</button>
+          <button data-cmd="reversePages" data-needs-doc>Reverse page order</button>
+          <button data-cmd="duplicatePages" data-needs-doc>Duplicate selected pages</button>
+          <button data-cmd="cropPages" data-needs-doc>Crop pages…</button>
+        </section>
+        <section>
+          <h3>Edit document</h3>
+          <button data-cmd="watermark" data-needs-doc>Add watermark…</button>
+          <button data-cmd="headerFooter" data-needs-doc>Header, footer &amp; page numbers…</button>
+          <button data-cmd="bates" data-needs-doc>Bates numbering…</button>
+          <button data-cmd="findRedact" data-needs-doc>Find &amp; redact text…</button>
+          <button data-cmd="applyRedactions" data-needs-doc>Apply redactions</button>
+          <button data-cmd="flattenAnnots" data-needs-doc>Flatten annotations</button>
+          <button data-cmd="metadata" data-needs-doc>Document properties…</button>
+        </section>
+        <section>
+          <h3>Forms</h3>
+          <button data-cmd="fillForm" data-needs-doc>Fill form fields…</button>
+          <button data-cmd="flattenForm" data-needs-doc>Flatten form</button>
+        </section>
+        <section>
+          <h3>Scan &amp; OCR</h3>
+          <button data-cmd="ocr" data-needs-doc>Recognize text (OCR)…</button>
+        </section>
+        <section>
+          <h3>Protect</h3>
+          <button data-cmd="encrypt" data-needs-doc>Encrypt with password…</button>
+          <button data-cmd="removeSecurity" data-needs-doc>Remove security</button>
+        </section>
+        <section>
+          <h3>Optimize &amp; export</h3>
+          <button data-cmd="compress" data-needs-doc>Compress / optimize…</button>
+          <button data-cmd="exportImages" data-needs-doc>Export pages as images…</button>
+          <button data-cmd="exportText" data-needs-doc>Export text (.txt)</button>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="statusbar" id="statusbar"><span id="statusText">No document</span><span id="statusRight"></span></footer>
+    <div id="toasts" class="toasts"></div>
+    <input type="file" id="fileInput" accept="application/pdf,image/png,image/jpeg" multiple hidden />
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

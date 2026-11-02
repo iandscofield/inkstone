@@ -1,0 +1,29 @@
+{
+  "name": "pdf-pro",
+  "version": "1.0.0",
+  "description": "PDF Pro - a free, open source PDF editor (view, annotate, sign, fill forms, organize pages, OCR, protect)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "pdf",
+    "editor",
+    "annotate",
+    "ocr",
+    "forms"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@cantoo/pdf-lib": "^2.11.1",
+    "jszip": "^3.10.2",
+    "pdfjs-dist": "^4.10.38",
+    "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "vite": "^6.4.5"
+  }
+}
