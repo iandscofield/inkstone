@@ -119,6 +119,12 @@ export function downloadBlob(data, name, mime = 'application/pdf') {
  * overwrite the same file; falls back to a download.
  */
 export async function saveBytes(bytes, name, handle) {
+  const desktop = window.pdfProDesktop;
+  if (desktop && !handle?.createWritable) {
+    const path = await desktop.saveDialog(name);
+    if (!path) return undefined;
+    handle = desktopHandle(path);
+  }
   if (handle?.createWritable) {
     const w = await handle.createWritable();
     await w.write(bytes);
@@ -139,6 +145,21 @@ export async function saveBytes(bytes, name, handle) {
   }
   downloadBlob(bytes, name);
   return null;
+}
+
+/** A FileSystemFileHandle look-alike backed by the desktop app's native file access. */
+export function desktopHandle(path) {
+  return {
+    name: path.split(/[\\/]/).pop(),
+    path,
+    async createWritable() {
+      let data;
+      return {
+        write: async (bytes) => { data = bytes; },
+        close: () => window.pdfProDesktop.writeFile(path, data),
+      };
+    },
+  };
 }
 
 export function parsePageRange(str, total) {

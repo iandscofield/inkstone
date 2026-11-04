@@ -1,7 +1,7 @@
 import './styles.css';
 import * as E from './lib/engine.js';
-import { openPdf } from './lib/pdfjs.js';
-import { $, $$, h, toast, setStatus, dialog, prompt, readBytes, saveBytes, baseName } from './lib/ui.js';
+import { openPdf, renderPageToCanvas } from './lib/pdfjs.js';
+import { $, $$, h, toast, setStatus, dialog, prompt, readBytes, saveBytes, baseName, desktopHandle } from './lib/ui.js';
 import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
 import { Annotator, TYPE_LABELS } from './annotations.js';
@@ -246,7 +246,15 @@ async function confirmDiscard() {
   return !!value;
 }
 
+/** Files handed over by the desktop app (Open dialog, "Open with", double-click). */
+function openDesktopFiles(list) {
+  if (!list?.length) return;
+  const files = list.map((f) => new File([f.bytes], f.name, { type: /\.pdf$/i.test(f.name) ? 'application/pdf' : /\.png$/i.test(f.name) ? 'image/png' : 'image/jpeg' }));
+  return openFiles(files, list.length === 1 ? desktopHandle(list[0].path) : null);
+}
+
 async function openCommand() {
+  if (window.pdfProDesktop) return openDesktopFiles(await window.pdfProDesktop.openDialog());
   if (window.showOpenFilePicker) {
     try {
       const handles = await window.showOpenFilePicker({
@@ -292,10 +300,34 @@ async function save(saveAs = false) {
   }
 }
 
+/** Desktop builds have no PDF plugin to print through, so print rendered page images instead. */
+async function printAsImages(out) {
+  const pdf = await openPdf(out);
+  const urls = [];
+  for (let i = 0; i < pdf.numPages; i++) {
+    setStatus(`Preparing page ${i + 1} of ${pdf.numPages} for printing…`);
+    const { canvas, viewport } = await renderPageToCanvas(pdf, i, 2);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    urls.push({ url: URL.createObjectURL(blob), w: viewport.width / 2, h: viewport.height / 2 });
+  }
+  pdf.destroy();
+  const frame = h('iframe', { style: { position: 'fixed', right: 0, bottom: 0, width: '1px', height: '1px', border: 0, opacity: 0 } });
+  document.body.append(frame);
+  const doc = frame.contentDocument;
+  doc.open();
+  doc.write(`<!doctype html><style>@page{margin:0}body{margin:0}img{display:block;width:100%;height:auto;page-break-after:always;break-after:page}img:last-child{page-break-after:auto;break-after:auto}</style>${urls.map((u) => `<img src="${u.url}">`).join('')}`);
+  doc.close();
+  await Promise.all([...doc.images].map((img) => img.decode().catch(() => {})));
+  frame.contentWindow.focus();
+  frame.contentWindow.print();
+  setTimeout(() => { frame.remove(); urls.forEach((u) => URL.revokeObjectURL(u.url)); }, 1000);
+}
+
 async function print() {
   setBusy('Preparing print');
   try {
     const out = await app.outputBytes();
+    if (window.pdfProDesktop) return await printAsImages(out);
     const url = URL.createObjectURL(new Blob([out], { type: 'application/pdf' }));
     const frame = h('iframe', { src: url, style: { position: 'fixed', right: 0, bottom: 0, width: '1px', height: '1px', border: 0, opacity: 0 } });
     frame.onload = () => {
@@ -647,6 +679,13 @@ renderComments();
 const fileParam = new URLSearchParams(location.search).get('file');
 if (fileParam) {
   fetch(fileParam).then((r) => r.blob()).then((b) => openFiles([new File([b], fileParam.split('/').pop() || 'document.pdf', { type: 'application/pdf' })])).catch((e) => toast(`Could not load ${fileParam}: ${e.message}`, 'error'));
+}
+
+// Desktop app: receive files from "Open with" / double-click, now and later.
+if (window.pdfProDesktop) {
+  document.body.classList.add('desktop');
+  window.pdfProDesktop.onOpenFiles(openDesktopFiles);
+  window.pdfProDesktop.ready().then(openDesktopFiles);
 }
 
 window.pdfPro = app; // handy for debugging from the console

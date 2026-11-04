@@ -5,7 +5,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "desktop": "vite build && electron .",
+    "desktop:dev": "node scripts/desktop-dev.mjs",
+    "icon": "electron scripts/make-icon.mjs",
+    "dist": "vite build && electron-builder --win nsis portable",
+    "dist:dir": "vite build && electron-builder --win dir"
   },
   "keywords": [
     "pdf",
@@ -14,16 +19,71 @@
     "ocr",
     "forms"
   ],
-  "author": "",
+  "author": "PDF Pro contributors",
   "license": "MIT",
   "type": "module",
-  "dependencies": {
+  "dependencies": {},
+  "devDependencies": {
     "@cantoo/pdf-lib": "^2.11.1",
     "jszip": "^3.10.2",
     "pdfjs-dist": "^4.10.38",
-    "tesseract.js": "^5.1.1"
-  },
-  "devDependencies": {
+    "tesseract.js": "^5.1.1",
+    "electron": "^38.8.6",
+    "electron-builder": "^26.18.0",
     "vite": "^6.4.5"
+  },
+  "main": "electron/main.mjs",
+  "build": {
+    "appId": "org.pdfpro.app",
+    "productName": "PDF Pro",
+    "copyright": "Copyright © 2026 PDF Pro contributors",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "PDF-Pro-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "PDF-Pro-Portable-${version}.${ext}"
+    },
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF Document",
+        "description": "PDF document",
+        "role": "Editor"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office"
+    }
   }
 }

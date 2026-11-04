@@ -37,6 +37,27 @@ npm run build
 
 The output goes to `dist/`. You can also open a document on launch with `?file=<url>` (same-origin or CORS-enabled URLs).
 
+## Desktop app (Windows)
+
+PDF Pro is also packaged as a desktop app with [Electron](https://www.electronjs.org). Compared with the browser version, it adds:
+
+- native Open and Save dialogs
+- Save that writes back to the file you opened
+- registration as a handler for `.pdf` files, so you can use "Open with" and double-click PDFs
+- a prompt about unsaved changes when you close the window
+
+| Command | What it does |
+| --- | --- |
+| `npm run desktop` | Build the web app and run it in Electron |
+| `npm run desktop:dev` | Run in Electron against the Vite dev server, with live reload |
+| `npm run dist` | Build `release/PDF-Pro-Setup-<version>.exe` (installer) and `release/PDF-Pro-Portable-<version>.exe` (no install needed) |
+| `npm run dist:dir` | Build an unpacked app in `release/win-unpacked/` for quick testing |
+| `npm run icon` | Regenerate `build/icon.png` |
+
+The installers are **not code-signed**, so Windows SmartScreen will warn the first time you run them. Choose "More info → Run anyway", or sign the builds with your own certificate (see electron-builder's `win.certificateFile` option). The `package.json` `build` section also has macOS (dmg) and Linux (AppImage) targets, but you have to build them on those platforms.
+
+In the desktop app, the page is served from a private `app://` scheme in a sandboxed, context-isolated window. A small preload bridge exposes only open, save and write, and it can only write to files you opened or chose in a Save dialog. Links in documents open in your normal browser.
+
 ## Keyboard shortcuts
 
 | Keys | Action |
@@ -68,6 +89,9 @@ src/
   lib/engine.js    PDF manipulation (pure bytes -> bytes)
   lib/pdfjs.js     pdf.js setup and rendering helpers
   lib/ui.js        DOM, dialogs, toasts, file IO
+electron/
+  main.mjs         desktop shell: app:// protocol, dialogs, file association
+  preload.cjs      minimal bridge exposed to the page as window.pdfProDesktop
 ```
 
 ## Known limitations
