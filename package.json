@@ -22,14 +22,14 @@
   "author": "PDF Pro contributors",
   "license": "MIT",
   "type": "module",
-  "dependencies": {},
   "devDependencies": {
     "@cantoo/pdf-lib": "^2.11.1",
-    "jszip": "^3.10.2",
-    "pdfjs-dist": "^4.10.38",
-    "tesseract.js": "^5.1.1",
     "electron": "^38.8.6",
     "electron-builder": "^26.18.0",
+    "jszip": "^3.10.2",
+    "lucide": "^0.468.0",
+    "pdfjs-dist": "^4.10.38",
+    "tesseract.js": "^5.1.1",
     "vite": "^6.4.5"
   },
   "main": "electron/main.mjs",

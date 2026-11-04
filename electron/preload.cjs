@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld('pdfProDesktop', {
   saveDialog: (suggestedName) => ipcRenderer.invoke('save-dialog', suggestedName),
   writeFile: (path, bytes) => ipcRenderer.invoke('write-file', path, bytes),
   showInFolder: (path) => ipcRenderer.invoke('show-in-folder', path),
+  setTitleBarTheme: (theme) => ipcRenderer.invoke('title-bar-theme', theme),
   onOpenFiles: (cb) => ipcRenderer.on('open-files', (_e, files) => cb(files)),
 });

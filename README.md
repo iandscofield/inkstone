@@ -10,7 +10,7 @@ A free, open source PDF editor that runs entirely in your browser. Files are pro
 | **Organize pages** | Drag-and-drop reorder, rotate, delete, duplicate, insert blank pages, extract, split (every N pages or by ranges → .zip), combine/insert PDFs and images, reverse order, crop |
 | **Comment & mark up** | Text boxes, highlight / underline / strikeout (drag an area, or select text and press Ctrl+H), freehand drawing, rectangles, ellipses, lines, arrows, sticky-note comments (saved as real PDF comments), stamps (presets or custom, with optional name and date), images |
 | **Edit** | Edit Text: click a line of existing text to replace it. White-out. Watermarks. Headers, footers and page numbers. Bates numbering. Document properties (metadata) |
-| **Fill & sign** | Draw, type or reuse a saved signature. Fill existing form fields (text, checkbox, dropdown, list, radio). Create new text fields and checkboxes. Flatten forms |
+| **Fill & sign** | Draw, type, or upload an image of your signature (white paper backgrounds are removed automatically), or reuse a saved one. Fill existing form fields (text, checkbox, dropdown, list, radio). Create new text fields and checkboxes. Flatten forms |
 | **Redact** | Mark areas by hand, or use **Find & redact** with plain text or regular expressions (e.g. `\d{3}-\d{2}-\d{4}`). Applying redactions rasterizes the affected pages, so the hidden content is permanently removed rather than just covered |
 | **Scan & OCR** | Recognize text in scanned pages (12 languages). Adds an invisible text layer, so scans become searchable and selectable |
 | **Protect** | AES-256 password encryption with permission controls (printing, copying, editing, commenting, form filling, assembly). Opens password-protected PDFs. Remove security |
@@ -45,6 +45,7 @@ PDF Pro is also packaged as a desktop app with [Electron](https://www.electronjs
 - Save that writes back to the file you opened
 - registration as a handler for `.pdf` files, so you can use "Open with" and double-click PDFs
 - a prompt about unsaved changes when you close the window
+- no Windows title bar: the app draws its own header, and the native window buttons are overlaid on it in the current theme
 
 | Command | What it does |
 | --- | --- |
@@ -78,6 +79,7 @@ In the desktop app, the page is served from a private `app://` scheme in a sandb
 - **Editing:** [@cantoo/pdf-lib](https://github.com/cantoo-scribe/pdf-lib) is a maintained pdf-lib fork that adds encryption and decryption. Every operation in [src/lib/engine.js](src/lib/engine.js) takes PDF bytes in and returns new bytes, which keeps undo simple: it is a stack of snapshots.
 - **Annotations** live on an SVG overlay in page coordinates and stay editable for the whole session. When you save, print or export, they are drawn into the PDF ("flattened"). Sticky notes are written as standard PDF comment annotations instead.
 - **OCR:** [Tesseract.js](https://github.com/naptha/tesseract.js) runs in a Web Worker.
+- **Icons:** [Lucide](https://lucide.dev) (ISC license).
 
 ```
 src/

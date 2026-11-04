@@ -56,8 +56,13 @@ function createWindow() {
     minHeight: 500,
     title: 'PDF Pro',
     icon: join(here, '..', 'build', 'icon.png'),
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#ffffff',
     show: false,
+    // No OS title bar: the app's own header is the drag region, with the native
+    // window buttons drawn on top of it (colors are synced from the page's theme).
+    titleBarStyle: 'hidden',
+    titleBarOverlay: process.platform === 'darwin' ? true : { color: '#ffffff', symbolColor: '#18181b', height: 40 },
+    trafficLightPosition: { x: 12, y: 12 },
     webPreferences: {
       preload: join(here, 'preload.cjs'),
       contextIsolation: true,
@@ -131,6 +136,13 @@ ipcMain.handle('write-file', async (_e, path, bytes) => {
   if (!writablePaths.has(p)) throw new Error('Not allowed to write to this location');
   await writeFile(p, Buffer.from(bytes));
   return true;
+});
+
+ipcMain.handle('title-bar-theme', (_e, { color, symbolColor } = {}) => {
+  const hex = /^#[0-9a-f]{3,8}$/i;
+  if (!win || process.platform === 'darwin' || !hex.test(color) || !hex.test(symbolColor)) return;
+  win.setTitleBarOverlay({ color, symbolColor, height: 40 });
+  win.setBackgroundColor(color);
 });
 
 ipcMain.handle('show-in-folder', (_e, path) => {

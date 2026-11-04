@@ -6,6 +6,9 @@ import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
 import { Annotator, TYPE_LABELS } from './annotations.js';
 import * as tools from './tools.js';
+import { createIcons, ArrowDownUp, Bookmark, Check, ChevronDown, ChevronUp, Circle, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, Hand, Hash, Heading, Highlighter, ImagePlus, Info, Layers, LayoutGrid, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Signature, Slash, Square, SquareCheck, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2 } from 'lucide';
+
+const ICONS = { ArrowDownUp, Bookmark, Check, ChevronDown, ChevronUp, Circle, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, Hand, Hash, Heading, Highlighter, ImagePlus, Info, Layers, LayoutGrid, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Signature, Slash, Square, SquareCheck, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2 };
 
 const MAX_HISTORY = 40;
 
@@ -487,7 +490,18 @@ function updateUI() {
   $('[data-cmd=redo]').disabled = !state.redo.length;
   $('#pageCount').textContent = `/ ${app.pageCount}`;
   $$('#toolbar button').forEach((b) => { b.disabled = !has; });
+  document.body.classList.toggle('no-doc', !has);
+  const name = $('#docName');
+  name.textContent = has ? state.fileName : '';
+  name.classList.toggle('dirty', has && state.dirty);
   updateStatus();
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  // Keep the desktop window's native min/max/close buttons in sync with the theme.
+  const css = getComputedStyle(document.documentElement);
+  window.pdfProDesktop?.setTitleBarTheme?.({ color: css.getPropertyValue('--chrome').trim(), symbolColor: css.getPropertyValue('--text').trim() });
 }
 
 // ---------- commands ----------
@@ -514,9 +528,14 @@ const commands = {
   searchNext: () => viewer.stepMatch(1),
   searchPrev: () => viewer.stepMatch(-1),
   toggleTheme: () => {
-    const dark = document.documentElement.dataset.theme !== 'dark';
-    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-    localStorage.setItem('pdfpro.theme', dark ? 'dark' : 'light');
+    const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    applyTheme(theme);
+    localStorage.setItem('pdfpro.theme', theme);
+  },
+  togglePanel: () => {
+    document.body.classList.toggle('panel-collapsed');
+    localStorage.setItem('pdfpro.panel', document.body.classList.contains('panel-collapsed') ? 'hidden' : 'shown');
+    if (viewer.zoomMode.startsWith('fit')) setTimeout(() => viewer.setZoom(viewer.zoomMode), 0);
   },
   rotateLeft: () => { const t = sel(); return runOp('Rotating', (b) => E.rotatePages(b, t, -90), { flatten: t }); },
   rotateRight: () => { const t = sel(); return runOp('Rotating', (b) => E.rotatePages(b, t, 90), { flatten: t }); },
@@ -574,7 +593,10 @@ document.addEventListener('click', (e) => {
 });
 
 $$('.tabs [data-tab]').forEach((btn) => btn.addEventListener('click', () => {
-  $$('.tabs [data-tab]').forEach((b) => b.classList.toggle('active', b === btn));
+  // Clicking the open tab again collapses the sidebar.
+  const collapse = btn.classList.contains('active') && !document.body.classList.contains('sidebar-collapsed');
+  document.body.classList.toggle('sidebar-collapsed', collapse);
+  $$('.tabs [data-tab]').forEach((b) => b.classList.toggle('active', b === btn && !collapse));
   $$('[data-tab-body]').forEach((b) => { b.hidden = b.dataset.tabBody !== btn.dataset.tab; });
 }));
 
@@ -669,8 +691,10 @@ window.addEventListener('beforeunload', (e) => {
 
 // ---------- boot ----------
 
-const theme = localStorage.getItem('pdfpro.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-document.documentElement.dataset.theme = theme;
+createIcons({ icons: ICONS });
+if (window.pdfProDesktop) document.body.classList.add('desktop');
+if (localStorage.getItem('pdfpro.panel') === 'hidden') document.body.classList.add('panel-collapsed');
+applyTheme(localStorage.getItem('pdfpro.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
 app.setTool('select');
 updateUI();
 renderComments();
@@ -683,7 +707,6 @@ if (fileParam) {
 
 // Desktop app: receive files from "Open with" / double-click, now and later.
 if (window.pdfProDesktop) {
-  document.body.classList.add('desktop');
   window.pdfProDesktop.onOpenFiles(openDesktopFiles);
   window.pdfProDesktop.ready().then(openDesktopFiles);
 }

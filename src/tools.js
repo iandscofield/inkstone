@@ -157,12 +157,12 @@ export async function stamp(app) {
 const SIG_KEY = 'pdfpro.signatures';
 const loadSigs = () => { try { return JSON.parse(localStorage.getItem(SIG_KEY)) || []; } catch { return []; } };
 
-function trimCanvas(c) {
+function trimCanvas(c, minAlpha = 24) {
   const ctx = c.getContext('2d');
   const { data, width, height } = ctx.getImageData(0, 0, c.width, c.height);
   let x0 = width, y0 = height, x1 = 0, y1 = 0;
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    if (data[(y * width + x) * 4 + 3] > 10) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    if (data[(y * width + x) * 4 + 3] > minAlpha) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
   }
   if (x1 <= x0) return null;
   const out = document.createElement('canvas');
@@ -172,60 +172,147 @@ function trimCanvas(c) {
   return out;
 }
 
+/**
+ * Make light paper pixels transparent so a photographed or scanned signature
+ * sits cleanly on the page. Pixels lighter than `hi` vanish, darker than `lo`
+ * stay opaque, with a soft ramp in between to keep edges smooth.
+ */
+function removeBackground(canvas, lo = 150, hi = 225) {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    const keep = lum <= lo ? 1 : lum >= hi ? 0 : (hi - lum) / (hi - lo);
+    // Drop near-invisible paper texture so it doesn't defeat auto-cropping.
+    d[i + 3] = keep < 0.2 ? 0 : Math.round(d[i + 3] * keep);
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+/** Load an uploaded image onto a canvas, downscaled to a sensible signature size. */
+async function imageFileToCanvas(file, maxW = 1200) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImage(url);
+    const scale = Math.min(1, maxW / img.width);
+    const c = h('canvas', { width: Math.round(img.width * scale), height: Math.round(img.height * scale) });
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return c;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export async function signature(app) {
-  const pad = h('canvas', { className: 'sigpad', width: 560, height: 180 });
+  let mode = 'draw';
+  let picked = null;
+
+  // --- Draw ---
+  const pad = h('canvas', { className: 'sigpad', width: 640, height: 200 });
   const ctx = pad.getContext('2d');
-  ctx.lineWidth = 2.6;
+  ctx.lineWidth = 2.8;
   ctx.lineCap = ctx.lineJoin = 'round';
   let drawing = false, drawn = false;
   const pos = (e) => { const r = pad.getBoundingClientRect(); return [(e.clientX - r.left) * (pad.width / r.width), (e.clientY - r.top) * (pad.height / r.height)]; };
-  pad.addEventListener('pointerdown', (e) => { drawing = true; drawn = true; pad.setPointerCapture(e.pointerId); ctx.strokeStyle = form.querySelector('[name=ink]').value; ctx.beginPath(); ctx.moveTo(...pos(e)); });
+  pad.addEventListener('pointerdown', (e) => { drawing = true; drawn = true; pad.setPointerCapture(e.pointerId); ctx.strokeStyle = ink.value; ctx.beginPath(); ctx.moveTo(...pos(e)); });
   pad.addEventListener('pointermove', (e) => { if (drawing) { ctx.lineTo(...pos(e)); ctx.stroke(); } });
   pad.addEventListener('pointerup', () => { drawing = false; });
+  const clearPad = () => { ctx.clearRect(0, 0, pad.width, pad.height); drawn = false; };
 
-  let picked = null;
+  // --- Type ---
+  const typed = h('input', { type: 'text', placeholder: 'Type your name', style: { width: '100%', fontSize: '15px' } });
+  const typedPreview = h('div', { style: { height: '110px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', borderRadius: '10px', border: '1px dashed var(--border)', marginTop: '10px', font: 'italic 46px "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive', overflow: 'hidden', whiteSpace: 'nowrap' } });
+  const syncTyped = () => { typedPreview.textContent = typed.value || ' '; typedPreview.style.color = ink.value; };
+  typed.addEventListener('input', syncTyped);
+
+  // --- Upload ---
+  let uploaded = null; // original canvas
+  const fileInput = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif,image/bmp', hidden: true });
+  const removeBg = h('input', { type: 'checkbox', checked: true });
+  const dropText = h('div', {}, h('strong', {}, 'Choose an image'), h('div', { className: 'small' }, 'PNG, JPG or a photo of your signature on white paper. You can also drop it here.'));
+  const preview = h('img', { hidden: true, alt: 'Signature preview' });
+  const drop = h('div', { className: 'sig-drop', onclick: () => fileInput.click() }, dropText, preview);
+  const processed = () => {
+    if (!uploaded) return null;
+    const c = h('canvas', { width: uploaded.width, height: uploaded.height });
+    c.getContext('2d').drawImage(uploaded, 0, 0);
+    return removeBg.checked ? removeBackground(c) : c;
+  };
+  const refreshPreview = () => {
+    const c = processed();
+    if (!c) return;
+    preview.src = (trimCanvas(c) || c).toDataURL('image/png');
+    preview.hidden = false;
+    dropText.hidden = true;
+  };
+  const takeFile = async (file) => {
+    if (!file || !file.type.startsWith('image/')) return toast('Please choose an image file', 'error');
+    try { uploaded = await imageFileToCanvas(file); refreshPreview(); } catch { toast('Could not read that image', 'error'); }
+  };
+  fileInput.addEventListener('change', () => takeFile(fileInput.files[0]));
+  removeBg.addEventListener('change', refreshPreview);
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('over'); takeFile(e.dataTransfer.files[0]); });
+
+  // --- Shared ---
+  const ink = h('input', { type: 'color', value: '#1a237e', oninput: syncTyped });
+  const remember = h('input', { type: 'checkbox', checked: true });
+  const panes = {
+    draw: h('div', {}, pad, h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' } },
+      h('label', { className: 'muted' }, 'Ink ', ink), h('button', { onclick: clearPad }, 'Clear'))),
+    type: h('div', {}, typed, typedPreview),
+    upload: h('div', {}, drop, fileInput, h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', marginTop: '10px' } }, removeBg, 'Remove white background')),
+  };
+  const tabs = h('div', { className: 'seg-tabs' }, Object.entries({ draw: 'Draw', type: 'Type', upload: 'Upload image' }).map(([k, label]) =>
+    h('button', { className: k === mode ? 'active' : '', onclick: (e) => {
+      mode = k;
+      tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === e.currentTarget));
+      Object.entries(panes).forEach(([pk, el]) => { el.hidden = pk !== k; });
+      if (k === 'type') { syncTyped(); typed.focus(); }
+    } }, label)));
+  Object.entries(panes).forEach(([pk, el]) => { el.hidden = pk !== mode; });
+
   const sigs = loadSigs();
   const list = h('div', { className: 'sig-list' }, sigs.map((src, i) => h('span', {},
     h('img', { src, title: 'Use this signature', onclick: (e) => { picked = src; e.target.closest('.modal').querySelector('.foot .primary').click(); } }),
-    h('button', { title: 'Forget', onclick: (e) => { const s = loadSigs(); s.splice(i, 1); localStorage.setItem(SIG_KEY, JSON.stringify(s)); e.target.parentElement.remove(); } }, '×'))));
-  const form = h('div', {},
-    h('p', { className: 'muted' }, 'Draw your signature, or type it below. Signatures are stored only in this browser.'),
-    pad,
-    h('div', { className: 'form-grid', style: { marginTop: '10px' } },
-      h('label', {}, 'Or type'), h('input', { type: 'text', name: 'typed', placeholder: 'Your name' }),
-      h('label', {}, 'Ink'), h('input', { type: 'color', name: 'ink', value: '#1a237e' }),
-      h('label', {}, ''), h('label', {}, h('input', { type: 'checkbox', name: 'remember', checked: true }), ' Remember this signature')),
-    sigs.length ? h('div', {}, h('h4', { style: { margin: '12px 0 0' } }, 'Saved signatures'), list) : null);
+    h('button', { title: 'Forget this signature', onclick: (e) => { const s = loadSigs(); s.splice(i, 1); localStorage.setItem(SIG_KEY, JSON.stringify(s)); e.target.parentElement.remove(); } }, '×'))));
 
-  const { value } = await dialog({
-    title: 'Fill & Sign',
-    body: form,
-    buttons: [{ label: 'Cancel', value: null }, { label: 'Clear pad', value: 'clear' }, { label: 'Place signature', value: 'ok', primary: true }],
-    onOpen: () => {},
-  });
-  if (value === 'clear') return signature(app);
+  const body = h('div', { style: { width: 'min(640px, 80vw)' } },
+    tabs, ...Object.values(panes),
+    h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', marginTop: '12px' } }, remember, 'Save for next time (stored only on this device)'),
+    sigs.length ? h('div', { style: { marginTop: '14px' } }, h('div', { className: 'muted small' }, 'Saved signatures — click one to use it'), list) : null);
+
+  const { value } = await dialog({ title: 'Add signature', body, buttons: [{ label: 'Cancel', value: null }, { label: 'Place signature', value: 'ok', primary: true }] });
   if (!value) return;
+
   let src = picked;
   if (!src) {
-    const v = formValues(form);
     let c;
-    if (v.typed.trim()) {
-      c = document.createElement('canvas');
-      c.width = 900; c.height = 220;
+    if (mode === 'type') {
+      if (!typed.value.trim()) return toast('Type your name first', 'error');
+      c = h('canvas', { width: 1100, height: 240 });
       const t = c.getContext('2d');
-      t.fillStyle = v.ink;
+      t.fillStyle = ink.value;
       t.font = 'italic 110px "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive';
       t.textBaseline = 'middle';
-      t.fillText(v.typed.trim(), 20, 110);
-    } else if (drawn) c = pad;
-    else return toast('Draw or type a signature first', 'error');
+      t.fillText(typed.value.trim(), 20, 120);
+    } else if (mode === 'upload') {
+      c = processed();
+      if (!c) return toast('Choose an image first', 'error');
+    } else {
+      if (!drawn) return toast('Draw your signature first', 'error');
+      c = pad;
+    }
     const trimmed = trimCanvas(c);
-    if (!trimmed) return toast('Signature is empty', 'error');
+    if (!trimmed) return toast('The signature is empty — try turning off "Remove white background"', 'error');
     src = trimmed.toDataURL('image/png');
-    if (v.remember) localStorage.setItem(SIG_KEY, JSON.stringify([src, ...loadSigs()].slice(0, 6)));
+    if (remember.checked) localStorage.setItem(SIG_KEY, JSON.stringify([src, ...loadSigs()].slice(0, 8)));
   }
   const img = await loadImage(src);
-  const w = 160;
+  const w = Math.min(180, img.width * 0.75);
   app.annots.startPlacing({ kind: 'image', src, w, h: (w * img.height) / img.width });
 }
 
