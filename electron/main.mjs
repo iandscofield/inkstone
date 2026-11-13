@@ -5,6 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync, cpSync } from 'node:fs';
 import { basename, dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as signing from './signing.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distDir = resolve(here, '..', 'dist');
@@ -153,6 +154,28 @@ ipcMain.handle('title-bar-theme', (_e, { color, symbolColor } = {}) => {
   win.setTitleBarOverlay({ color, symbolColor, height: 40 });
   win.setBackgroundColor(color);
 });
+
+// ---------- digital IDs & certificate signatures ----------
+
+ipcMain.handle('ids-list', () => signing.listIds());
+ipcMain.handle('ids-create', (_e, opts) => signing.createId(opts));
+ipcMain.handle('ids-import', (_e, bytes, password) => signing.importId(bytes, password));
+ipcMain.handle('ids-delete', (_e, id) => signing.deleteId(id));
+ipcMain.handle('ids-export', async (_e, id, name) => {
+  const r = await dialog.showSaveDialog(win, { defaultPath: `${name || 'digital-id'}.pfx`, filters: [{ name: 'Digital ID (PKCS#12)', extensions: ['pfx', 'p12'] }] });
+  if (r.canceled || !r.filePath) return false;
+  await writeFile(r.filePath, await signing.readIdFile(id));
+  return true;
+});
+ipcMain.handle('ids-export-cert', async (_e, id, password, name) => {
+  const pem = await signing.certificatePem(id, password);
+  const r = await dialog.showSaveDialog(win, { defaultPath: `${name || 'certificate'}.cer`, filters: [{ name: 'Certificate', extensions: ['cer', 'pem'] }] });
+  if (r.canceled || !r.filePath) return false;
+  await writeFile(r.filePath, pem);
+  return true;
+});
+ipcMain.handle('sign-pdf', (_e, opts) => signing.signPdf(opts));
+ipcMain.handle('verify-pdf', (_e, bytes) => signing.verifyPdf(bytes));
 
 ipcMain.handle('show-in-folder', (_e, path) => {
   const p = resolve(String(path));

@@ -86,5 +86,14 @@
       ],
       "category": "Office"
     }
+  },
+  "dependencies": {
+    "@signpdf/placeholder-pdf-lib": "^3.4.0",
+    "@signpdf/placeholder-plain": "^3.4.0",
+    "@signpdf/signer-p12": "^3.4.0",
+    "@signpdf/signpdf": "^3.4.0",
+    "@signpdf/utils": "^3.4.0",
+    "node-forge": "^1.4.3",
+    "pdf-lib": "^1.17.1"
   }
 }

@@ -384,3 +384,30 @@ body.panel-collapsed .panel { display: none; }
 .diff-text { margin-top: 6px; line-height: 1.7; font-size: 13px; }
 .diff-text ins { background: rgba(34, 197, 94, 0.22); text-decoration: none; border-radius: 3px; padding: 0 2px; }
 .diff-text del { background: rgba(239, 68, 68, 0.18); color: var(--accent-text); border-radius: 3px; padding: 0 2px; }
+
+/* ---------- digital signatures ---------- */
+.rail button { position: relative; }
+.rail button[data-count]:not([data-count=''])::after {
+  content: attr(data-count);
+  position: absolute; top: 3px; right: 3px; min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 8px; background: #16a34a; color: #fff; font-size: 10px; line-height: 15px; font-weight: 700;
+}
+.rail button.has-problem::after { background: var(--accent) !important; }
+.signatures { padding: 0 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.sig-item { display: flex; flex-direction: column; gap: 2px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); border-left-width: 4px; cursor: pointer; background: var(--surface-2); }
+.sig-item:hover { background: var(--hover); }
+.sig-item small { color: var(--text); opacity: 0.85; }
+.sig-item small.muted { color: var(--muted); opacity: 1; }
+.sig-status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.sig-item.good { border-left-color: #16a34a; } .sig-item.good .sig-status { color: #16a34a; }
+.sig-item.warn { border-left-color: #d97706; } .sig-item.warn .sig-status { color: #d97706; }
+.sig-item.bad { border-left-color: var(--accent); } .sig-item.bad .sig-status { color: var(--accent-text); }
+.sig-banner { padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+.sig-banner.warn { background: rgba(217, 119, 6, 0.14); color: #b45309; }
+:root[data-theme='dark'] .sig-banner.warn { color: #fbbf24; }
+.sig-list img.chosen { border-color: var(--select); box-shadow: 0 0 0 2px color-mix(in srgb, var(--select) 30%, transparent); }
+.id-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.id-card { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.id-actions { display: flex; gap: 4px; flex: none; }
+.id-actions button { padding: 4px 9px; font-size: 12px; }
+.id-actions button.danger:hover { color: var(--accent); border-color: var(--accent); }

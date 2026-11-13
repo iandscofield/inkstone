@@ -2,7 +2,7 @@
 import JSZip from 'jszip';
 import * as E from './lib/engine.js';
 import { renderPageToCanvas, canvasToBytes, pageText, openPdf } from './lib/pdfjs.js';
-import { h, toast, dialog, formValues, pickFiles, readBytes, prompt, downloadBlob, parsePageRange, baseName, setStatus, uid } from './lib/ui.js';
+import { h, toast, dialog, formValues, pickFiles, readBytes, prompt, downloadBlob, saveBytes, parsePageRange, baseName, setStatus, uid } from './lib/ui.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const rangeRow = (value = 'all') => `<label>Pages</label><input type="text" name="range" value="${value}" placeholder="all, or e.g. 1-3, 5, 8-">`;
@@ -622,6 +622,194 @@ export async function removeLinks(app, pages) {
   const label = pages.length === 1 ? `page ${pages[0] + 1}` : `${pages.length} pages`;
   const { value } = await dialog({ title: 'Remove links', body: h('p', {}, `Remove every link on ${label}?`), buttons: [{ label: 'Cancel', value: null }, { label: 'Remove', value: 'ok', primary: true }] });
   if (value) await app.runOp('Removing links', (b) => E.removeLinks(b, pages));
+}
+
+// ---------- digital IDs & certificate signatures ----------
+
+const desktopOnly = () => {
+  if (window.inkstoneDesktop?.ids) return window.inkstoneDesktop;
+  toast('Certificate signatures are available in the Inkstone desktop app.', 'info', 5000);
+  return null;
+};
+// Errors from the desktop process arrive wrapped as "Error invoking remote method ...: Error: msg".
+const cleanError = (e) => String(e?.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—');
+
+async function createDigitalId(desk) {
+  const { value, form } = await dialog({
+    title: 'Create a digital ID',
+    body: `<p class="muted">Creates a personal certificate on this computer for signing documents. Recipients will see your name, but because it isn't issued by a certificate authority, their apps will show the identity as "not verified" unless they choose to trust your certificate.</p>
+      <div class="form-grid">
+      <label>Full name</label><input type="text" name="name" autocomplete="name">
+      <label>Email</label><input type="text" name="email" autocomplete="email" placeholder="optional">
+      <label>Organization</label><input type="text" name="org" placeholder="optional">
+      <label>Password</label><input type="password" name="password" autocomplete="new-password" placeholder="at least 6 characters">
+      <label>Confirm</label><input type="password" name="password2" autocomplete="new-password">
+      <p class="full muted small">You'll need this password every time you sign. It can't be recovered, so keep it safe.</p></div>`,
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Create', value: 'ok', primary: true }],
+    validate: (f, val) => {
+      if (!val) return null;
+      const v = formValues(f);
+      if (!v.name.trim()) return 'Enter your name';
+      if (v.password.length < 6) return 'Choose a password of at least 6 characters';
+      if (v.password !== v.password2) return 'Passwords do not match';
+      return null;
+    },
+  });
+  if (!value) return null;
+  const v = formValues(form);
+  try {
+    const id = await desk.ids.create({ name: v.name, email: v.email, org: v.org, password: v.password });
+    toast(`Digital ID created for ${id.name}`);
+    return id;
+  } catch (e) { toast(cleanError(e), 'error', 6000); return null; }
+}
+
+async function importDigitalId(desk) {
+  const [file] = await pickFiles('.pfx,.p12,application/x-pkcs12');
+  if (!file) return null;
+  const pw = await prompt('Import digital ID', `Password for "${file.name}"`, '', { type: 'password' });
+  if (pw == null) return null;
+  try {
+    const id = await desk.ids.import(await readBytes(file), pw);
+    toast(`Imported digital ID for ${id.name}`);
+    return id;
+  } catch (e) { toast(cleanError(e), 'error', 6000); return null; }
+}
+
+/** Manage digital IDs: create, import, export, delete. */
+export async function digitalIds(app) {
+  const desk = desktopOnly();
+  if (!desk) return;
+  const ids = await desk.ids.list();
+  const row = (id) => h('div', { className: 'id-card' },
+    h('div', {},
+      h('strong', {}, id.name), id.email ? h('span', { className: 'muted' }, ` <${id.email}>`) : null,
+      h('div', { className: 'muted small' },
+        `${id.selfSigned ? 'Self-signed' : `Issued by ${id.issuer}`} · expires ${fmtDate(id.notAfter)}${new Date(id.notAfter) < new Date() ? ' (expired)' : ''}`)),
+    h('div', { className: 'id-actions' },
+      h('button', { title: 'Save a backup of this digital ID (including the private key) as a .pfx file', onclick: () => desk.ids.exportId(id.id, id.name) }, 'Back up'),
+      h('button', {
+        title: 'Save the public certificate to share with people who need to trust your signatures',
+        onclick: async () => {
+          const pw = await prompt('Export certificate', 'Digital ID password', '', { type: 'password' });
+          if (pw == null) return;
+          try { if (await desk.ids.exportCert(id.id, pw, id.name)) toast('Certificate saved'); } catch (e) { toast(cleanError(e), 'error'); }
+        },
+      }, 'Share certificate'),
+      h('button', {
+        className: 'danger',
+        onclick: async (e) => {
+          const { value } = await dialog({ title: 'Delete digital ID', body: h('p', {}, `Delete the digital ID for ${id.name}? Documents you already signed stay valid, but you won't be able to sign with it again unless you have a backup.`), buttons: [{ label: 'Cancel', value: null }, { label: 'Delete', value: 'ok', primary: true }] });
+          if (!value) return;
+          await desk.ids.remove(id.id);
+          e.target.closest('.id-card').remove();
+        },
+      }, 'Delete')));
+  const body = h('div', { style: { width: 'min(620px, 84vw)' } },
+    ids.length ? h('div', { className: 'id-list' }, ids.map(row)) : h('p', { className: 'muted' }, 'You have no digital IDs yet. Create one, or import a .pfx/.p12 certificate from your organization or a certificate authority.'),
+    h('p', { className: 'muted small' }, 'Digital IDs are stored on this computer and protected by their passwords. Private keys never leave Inkstone.'));
+  const { value } = await dialog({
+    title: 'Digital IDs', body,
+    buttons: [{ label: 'Close', value: null }, { label: 'Import .pfx / .p12', value: 'import' }, { label: 'Create new ID', value: 'create', primary: true }],
+  });
+  if (value === 'create' && (await createDigitalId(desk))) return digitalIds(app);
+  if (value === 'import' && (await importDigitalId(desk))) return digitalIds(app);
+}
+
+const REASONS = ['I am the author of this document', 'I approve this document', 'I have reviewed this document', 'I agree to the terms defined by this document', 'I certify the accuracy of this document'];
+
+/** Called after dragging out the signature box with the Digital ID tool. */
+export async function digitalSign(app, page, rect) {
+  const desk = desktopOnly();
+  if (!desk) return;
+  const st = app.state;
+  if (st.security) return toast('Remove password protection before adding a certificate signature.', 'error', 6000);
+  if (app.annots.list.some((a) => a.type === 'redact')) return toast('Apply or remove the pending redactions before signing.', 'error', 6000);
+  const alreadySigned = !!st.original && E.hasDigitalSignature(st.original);
+  if (alreadySigned && (st.bytes !== st.original || app.annots.list.length)) {
+    return toast('This document is already signed and has unsaved changes. Undo them before adding another signature — changing a signed document invalidates its signatures.', 'error', 8000);
+  }
+  let ids = await desk.ids.list();
+  if (!ids.length) {
+    const { value } = await dialog({ title: 'Sign with a digital ID', body: h('p', {}, 'You need a digital ID (certificate) to sign. Create one now, or import a .pfx/.p12 file.'), buttons: [{ label: 'Cancel', value: null }, { label: 'Import', value: 'import' }, { label: 'Create', value: 'create', primary: true }] });
+    const made = value === 'create' ? await createDigitalId(desk) : value === 'import' ? await importDigitalId(desk) : null;
+    if (!made) return;
+    ids = await desk.ids.list();
+  }
+  const valid = ids.filter((x) => new Date(x.notAfter) > new Date());
+  if (!valid.length) return toast('All your digital IDs have expired. Create or import a new one.', 'error');
+  const sigs = loadSigs();
+  let chosenImage = sigs[0] || null;
+  const imgPicker = sigs.length ? h('div', { className: 'sig-list' }, sigs.map((src, i) => h('img', {
+    src, className: i === 0 ? 'chosen' : '',
+    onclick: (e) => { chosenImage = src; e.target.parentElement.querySelectorAll('img').forEach((im) => im.classList.toggle('chosen', im === e.target)); },
+  }))) : null;
+  const body = h('div', { className: 'form-grid', style: { width: 'min(560px, 84vw)' } },
+    h('label', {}, 'Sign as'), h('select', { name: 'id' }, valid.map((x) => h('option', { value: x.id }, `${x.name}${x.email ? ` <${x.email}>` : ''}${x.selfSigned ? ' (self-signed)' : ''}`))),
+    h('label', {}, 'Password'), h('input', { type: 'password', name: 'password', autocomplete: 'current-password' }),
+    h('label', {}, 'Reason'), h('input', { type: 'text', name: 'reason', list: 'sigReasons', value: REASONS[1] }),
+    h('datalist', { id: 'sigReasons' }, REASONS.map((r) => h('option', { value: r }))),
+    h('label', {}, 'Location'), h('input', { type: 'text', name: 'location', placeholder: 'optional, e.g. Portland, OR' }),
+    h('label', {}, 'Contact'), h('input', { type: 'text', name: 'contact', placeholder: 'optional' }),
+    alreadySigned
+      ? h('p', { className: 'full muted small' }, 'This document is already signed, so this signature is added as an update that keeps the earlier signatures valid. It will be listed in the Signatures panel but has no visible stamp on the page.')
+      : [h('label', {}, 'Appearance'), h('label', {}, h('input', { type: 'checkbox', name: 'withImage', checked: !!sigs.length, disabled: !sigs.length }), sigs.length ? ' Include my handwritten signature' : ' (save a handwritten signature with Sign to include it)'),
+        imgPicker ? h('div', { className: 'full' }, imgPicker) : null],
+    h('p', { className: 'full muted small' }, 'Signing saves a new copy of the document. Any later change to that copy will show as invalidating the signature.'));
+  const { value, form } = await dialog({
+    title: 'Sign with a digital ID', body,
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Sign & save…', value: 'ok', primary: true }],
+    validate: (f, val) => (val && !formValues(f).password ? 'Enter your digital ID password' : null),
+  });
+  if (!value) return;
+  const v = formValues(form);
+  const id = valid.find((x) => x.id === v.id);
+  setStatus('Signing…');
+  try {
+    let bytes, widgetRect;
+    if (alreadySigned) {
+      bytes = st.original;
+      widgetRect = await E.pdfRectFor(bytes, page, rect);
+    } else {
+      const flat = await app.outputBytes();
+      const now = new Date();
+      const date = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      ({ bytes, widgetRect } = await E.drawSignatureAppearance(flat, page, rect, {
+        name: id.name, date, reason: v.reason, location: v.location, image: v.withImage ? chosenImage : null,
+      }));
+    }
+    const signed = await desk.signPdf({ bytes, id: id.id, password: v.password, reason: v.reason, location: v.location, contactInfo: v.contact, widget: { page, rect: widgetRect } });
+    setStatus('');
+    const handle = await saveBytes(signed, `${baseName(st.fileName).replace(/-signed$/, '')}-signed.pdf`);
+    if (handle === undefined) return toast('Signing cancelled — nothing was saved.');
+    await app.replaceWithSigned(signed, handle);
+    toast(`Signed by ${id.name} and saved as ${handle?.name || 'a new file'}`, 'info', 6000);
+  } catch (e) {
+    setStatus('');
+    toast(cleanError(e), 'error', 7000);
+  }
+}
+
+/** Certificate details for one verified signature. */
+export function signatureDetails(sig) {
+  const c = sig.certificate || {};
+  const row = (k, val) => [h('label', { className: 'muted' }, k), h('span', {}, val || '—')];
+  dialog({
+    title: `Signature by ${sig.name || 'unknown signer'}`,
+    body: h('div', { className: 'form-grid', style: { width: 'min(560px, 84vw)' } },
+      row('Signed', sig.signedAt ? new Date(sig.signedAt).toLocaleString() : 'unknown'),
+      row('Reason', sig.reason), row('Location', sig.location), row('Contact', sig.contactInfo),
+      row('Document integrity', sig.integrity ? 'Not changed since signing' : 'Altered after signing'),
+      row('Covers', sig.coversWholeFile ? 'The whole current document' : 'The document as it was when signed (later changes exist)'),
+      row('Certificate holder', [c.name, c.email && `<${c.email}>`, c.org].filter(Boolean).join(' ')),
+      row('Issued by', c.selfSigned ? `${c.issuer} (self-signed)` : c.issuer),
+      row('Valid', `${fmtDate(c.notBefore)} – ${fmtDate(c.notAfter)}`),
+      row('Identity', sig.trusted ? 'Verified: chains to a trusted certificate authority' : 'Not verified: self-signed or unknown certificate authority'),
+      h('label', { className: 'muted' }, 'SHA-256 fingerprint'), h('code', { style: { fontSize: '11px', wordBreak: 'break-all' } }, c.fingerprint || '—'),
+      sig.problems?.length ? h('p', { className: 'full', style: { color: 'var(--accent-text)' } }, sig.problems.join(' ')) : null),
+    buttons: [{ label: 'Close', value: null, primary: true }],
+  });
 }
 
 // ---------- compare ----------

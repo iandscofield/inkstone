@@ -6,9 +6,9 @@ import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
 import { Annotator, TYPE_LABELS } from './annotations.js';
 import * as tools from './tools.js';
-import { createIcons, ArrowDownUp, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink } from 'lucide';
+import { createIcons, ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink } from 'lucide';
 
-const ICONS = { ArrowDownUp, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink };
+const ICONS = { ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink };
 
 const MAX_HISTORY = 40;
 
@@ -29,6 +29,8 @@ function makeDoc() {
     redo: [],
     annots: [], // annotation list while the tab is in the background
     view: null, // {top, left, zoomMode, scale} while in the background
+    original: null, // exact bytes of a signed file as opened, kept so signatures can be verified and preserved
+    signatures: [], // verification results for `original`
   };
 }
 
@@ -196,7 +198,9 @@ async function toPdfBytes(files) {
     // Restore markup saved by Inkstone as editable objects.
     const { bytes, annots: saved } = await E.extractEditableAnnotations(res.bytes);
     const pages = (await E.load(bytes)).getPageCount();
-    out.push({ name: f.name, ...res, bytes, annots: saved, pages });
+    // Keep the untouched bytes of signed, unencrypted files: signatures cover the exact file.
+    const original = !('security' in res) && E.hasDigitalSignature(res.bytes) ? res.bytes : null;
+    out.push({ name: f.name, ...res, bytes, annots: saved, pages, original });
   }
   if (images.length) {
     const imgs = await Promise.all(images.map(async (f) => ({ bytes: await readBytes(f), type: f.type === 'image/png' ? 'image/png' : 'image/jpeg' })));
@@ -235,11 +239,13 @@ async function openFiles(files, handle = null) {
     Object.assign(state, {
       bytes, fileName: docs.length > 1 ? 'Combined.pdf' : docs[0].name, fileHandle: docs.length === 1 && files[0].type === 'application/pdf' ? handle : null,
       security: docs[0].security || null, dirty: docs.length > 1 || !files[0].name.endsWith('.pdf'), undo: [], redo: [],
+      original: docs.length === 1 ? docs[0].original : null, signatures: [],
     });
     annots.restore(saved);
     viewer.zoomMode = 'fit-width';
     await reload();
     renderTabs();
+    refreshSignatures();
     if (docs[0].security) toast('Document unlocked. It will stay password-protected when saved unless you remove security.');
   } catch (e) {
     console.error(e);
@@ -305,8 +311,74 @@ async function switchTab(i) {
     app.onAnnotationsChanged();
   }
   renderTabs();
+  renderSignatures();
   updateUI();
 }
+
+// ---------- certificate signatures ----------
+
+const signedAndUnchanged = () => state.original && state.bytes === state.original && !annots.list.length;
+
+async function refreshSignatures() {
+  const doc = state;
+  doc.signatures = [];
+  if (doc.original && window.inkstoneDesktop?.verifyPdf) {
+    try { doc.signatures = await window.inkstoneDesktop.verifyPdf(doc.original); } catch (e) { console.error(e); }
+  }
+  if (doc === state) renderSignatures();
+  if (doc.signatures.length && doc === state) {
+    const bad = doc.signatures.some((s) => !s.integrity || !s.signatureValid);
+    toast(bad ? 'Warning: a signature in this document is invalid. See the Signatures panel.' : `This document has ${doc.signatures.length} digital signature${doc.signatures.length === 1 ? '' : 's'}. See the Signatures panel.`, bad ? 'error' : 'info', 6000);
+  }
+}
+
+function renderSignatures() {
+  const box = $('#signatures');
+  const btn = $('.rail [data-tab=signatures]');
+  const sigs = state.signatures || [];
+  btn.dataset.count = sigs.length || '';
+  btn.classList.toggle('has-problem', sigs.some((s) => !s.integrity || !s.signatureValid));
+  box.replaceChildren();
+  if (state.original && !window.inkstoneDesktop) {
+    box.append(h('p', { className: 'muted small' }, 'This document is signed. Signatures can be checked in the Inkstone desktop app.'));
+    return;
+  }
+  if (!sigs.length) {
+    box.append(h('p', { className: 'muted small' }, state.pdf
+      ? 'No certificate signatures. Use "Sign with digital ID" to add one.'
+      : 'Open a signed document to check its signatures.'));
+    return;
+  }
+  if (state.original && !signedAndUnchanged()) {
+    box.append(h('div', { className: 'sig-banner warn' }, 'You have unsaved changes. Saving them will invalidate these signatures.'));
+  }
+  for (const s of sigs) {
+    const ok = s.integrity && s.signatureValid && !s.problems.length;
+    const level = !ok ? 'bad' : s.trusted && s.coversWholeFile ? 'good' : 'warn';
+    const headline = !ok ? 'Signature is invalid' : s.trusted ? 'Signature is valid' : 'Valid, but signer identity not verified';
+    box.append(h('div', { className: `sig-item ${level}`, onclick: () => tools.signatureDetails(s) },
+      h('div', { className: 'sig-status' }, headline),
+      h('strong', {}, s.name || 'Unknown signer'),
+      h('small', {}, s.signedAt ? new Date(s.signedAt).toLocaleString() : 'Signing time unknown'),
+      s.reason ? h('small', {}, s.reason) : null,
+      !s.coversWholeFile && ok ? h('small', { className: 'muted' }, 'The document was updated after this signature (for example, by a later signature).') : null,
+      !s.trusted && ok ? h('small', { className: 'muted' }, 'Self-signed or unknown certificate authority.') : null,
+      !ok ? h('small', {}, s.problems.join(' ')) : null,
+      h('small', { className: 'muted' }, 'Click for certificate details')));
+  }
+}
+
+/** After signing, the tab shows the signed copy that was just saved. */
+app.replaceWithSigned = async (signed, handle) => {
+  Object.assign(state, {
+    bytes: signed, original: signed, fileHandle: handle || null, fileName: handle?.name || state.fileName,
+    dirty: false, undo: [], redo: [], security: null,
+  });
+  annots.restore([]);
+  await reload({ keepPosition: true });
+  renderTabs();
+  await refreshSignatures();
+};
 
 async function closeTab(i) {
   const doc = tabs[i];
@@ -375,16 +447,36 @@ async function save(saveAs = false) {
     if (!value) return;
     if (!(await tools.applyRedactions(app, { ask: false }))) return;
   }
+  // Signed documents: an unchanged file is written byte-for-byte; changes would break the signatures.
+  const keepSigned = !!state.original && signedAndUnchanged();
+  if (state.original && !keepSigned) {
+    const { value } = await dialog({
+      title: 'Signed document',
+      body: h('p', {}, 'This document has digital signatures. Saving your changes will invalidate them. Save anyway?'),
+      buttons: [{ label: 'Cancel', value: null }, { label: 'Save anyway', value: 'ok', primary: true }],
+    });
+    if (!value) return;
+  }
   setBusy('Saving');
   try {
-    // Markup is drawn in for every reader, but stays editable when reopened in Inkstone.
-    const withMarkup = annots.list.length ? await E.saveEditableAnnotations(state.bytes, annots.list) : state.bytes;
-    const out = await E.prepareForSave(withMarkup, state.security);
+    let out;
+    if (keepSigned) out = state.original;
+    else {
+      // Markup is drawn in for every reader, but stays editable when reopened in Inkstone.
+      const withMarkup = annots.list.length ? await E.saveEditableAnnotations(state.bytes, annots.list) : state.bytes;
+      out = await E.prepareForSave(withMarkup, state.security);
+    }
     const handle = await saveBytes(out, state.fileName, saveAs ? null : state.fileHandle);
     if (handle === undefined) return;
     if (handle?.name) state.fileName = handle.name;
     state.fileHandle = handle || null;
     state.dirty = false;
+    if (state.original && !keepSigned) {
+      // The saved file was rewritten, so its old signatures no longer apply.
+      state.original = null;
+      state.signatures = [];
+      renderSignatures();
+    }
     renderTabs();
     toast(handle ? `Saved ${state.fileName}` : `Downloaded ${state.fileName}`);
   } catch (e) {
@@ -441,11 +533,13 @@ async function print() {
 // ---------- form fields (used by annotator) ----------
 
 app.addFormField = (page, type, name, rect, extra) => runOp('Adding form field', (b) => E.addFormField(b, page, type, name, rect, extra));
-app.createFromRect = (tool, page, rect) => (tool === 'link' ? tools.createLink(app, page, rect) : tools.createFormField(app, tool, page, rect));
+app.createFromRect = (tool, page, rect) => (tool === 'link' ? tools.createLink(app, page, rect)
+  : tool === 'digisign' ? tools.digitalSign(app, page, rect)
+  : tools.createFormField(app, tool, page, rect));
 
 // ---------- tools & UI state ----------
 
-const DRAW_TOOLS = ['text', 'highlight', 'underline', 'ink', 'rect', 'ellipse', 'line', 'arrow', 'note', 'whiteout', 'redact', 'field-text', 'field-check', 'field-dropdown', 'field-radio', 'link', 'place'];
+const DRAW_TOOLS = ['text', 'highlight', 'underline', 'ink', 'rect', 'ellipse', 'line', 'arrow', 'note', 'whiteout', 'redact', 'field-text', 'field-check', 'field-dropdown', 'field-radio', 'link', 'digisign', 'place'];
 
 app.setTool = (tool, { keepPending = false } = {}) => {
   if (!keepPending) annots.pending = null;
@@ -628,6 +722,7 @@ function updateUI() {
   $$('#toolbar button').forEach((b) => { b.disabled = !has; });
   document.body.classList.toggle('no-doc', !has);
   renderTabs();
+  renderSignatures();
   updateStatus();
 }
 
@@ -710,6 +805,11 @@ const commands = {
   manageFields: () => tools.manageFields(app),
   removeLinks: () => tools.removeLinks(app, sel()),
   compare: () => tools.compare(app),
+  digitalSign: () => {
+    app.setTool('digisign');
+    toast('Drag a box where the signature should appear');
+  },
+  digitalIds: () => tools.digitalIds(app),
   flattenAnnots: () => tools.flattenAnnotations(app),
   metadata: () => tools.metadata(app),
   fillForm: () => tools.fillForm(app),
@@ -859,4 +959,5 @@ if (window.inkstoneDesktop) {
   window.inkstoneDesktop.ready().then(openDesktopFiles);
 }
 
+app.engine = E;
 window.inkstone = app; // handy for debugging from the console

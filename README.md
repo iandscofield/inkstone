@@ -14,6 +14,7 @@ A free, open source PDF editor for Windows and the browser. Files are processed 
 | **Review** | Compare with another version: a word-by-word report of what changed on each page, with added or changed words highlighted in the document |
 | **Redact** | Mark areas by hand, or use **Find & redact** with plain text or regular expressions (e.g. `\d{3}-\d{2}-\d{4}`). Applying redactions rasterizes the affected pages, so the content is permanently removed rather than just covered. It can also scrub hidden information: document properties, XMP metadata, attachments, scripts and automatic actions |
 | **Scan & OCR** | Recognize text in scanned pages (12 languages; English is built in and works offline). Adds an invisible text layer, so scans become searchable and selectable |
+| **Digital signatures** (desktop app) | Sign with a certificate (PKCS#7, `adbe.pkcs7.detached`): drag where the signature goes, and Inkstone draws a visible signature (your handwritten image, name, date, reason, location) and saves a signed copy. Additional signatures are appended so earlier ones stay valid. **Digital IDs**: create a self-signed ID, or import a `.pfx`/`.p12` from your organization or a certificate authority. Back up IDs, share the public certificate, delete. A **Signatures panel** checks every signature when a PDF opens: whether the document changed since signing, whether the signature matches the certificate, and whether the signer's identity chains to a trusted certificate authority. Saving changes to a signed file warns first, and an unchanged signed file is saved byte-for-byte |
 | **Protect** | AES-256 password encryption with permission controls (printing, copying, editing, commenting, form filling, assembly). Opens password-protected PDFs. Remove security |
 | **Optimize & export** | Lossless optimization (removes unused objects, uses object streams) or strong lossy compression (JPEG rasterization). Export pages as PNG/JPEG. Export text. Print |
 | **Productivity** | Undo/redo per document (up to 40 steps, capped at about 400 MB for large files), keyboard shortcuts, drag & drop files, Save in place, unsaved-changes warning |
@@ -80,6 +81,7 @@ In the desktop app, the page is served from a private `app://` scheme in a sandb
 - **Rendering:** [pdf.js](https://github.com/mozilla/pdf.js) draws the pages, the text layer, links and outlines.
 - **Editing:** [@cantoo/pdf-lib](https://github.com/cantoo-scribe/pdf-lib) is a maintained pdf-lib fork that adds encryption and decryption. Every operation in [src/lib/engine.js](src/lib/engine.js) takes PDF bytes in and returns new bytes, which keeps undo simple: it is a stack of snapshots.
 - **Annotations** live on an SVG overlay in page coordinates. When you save, they are drawn into each page so every reader shows them. Inkstone also stores the editable objects in the page (`/InkstoneMarkup`), along with the content streams that hold the drawing (`/InkstoneStreams`). On open, it removes those streams and restores the objects. If another program has since rewritten the page, the drawing is left as it is. Sticky notes are also written as standard PDF comments. Print and export always flatten.
+- **Digital signatures** run in the desktop app's main process ([electron/signing.mjs](electron/signing.mjs)), using [@signpdf](https://github.com/vbuch/node-signpdf) and [node-forge](https://github.com/digitalbazaar/forge). Digital IDs are stored as password-protected PKCS#12 files in the app's user-data folder, and private keys never reach the page. The first signature rewrites the file with a classic cross-reference table. Later signatures are incremental updates. Verification parses each signature's PKCS#7 data, checks the message digest against the signed byte ranges, verifies the signature with the certificate's public key, and checks the chain against Node's bundled root certificates.
 - **OCR:** [Tesseract.js](https://github.com/naptha/tesseract.js) runs in a Web Worker. The engine and English data are copied into the app at build time (see `vite.config.js`), so English works offline.
 - **Icons:** [Lucide](https://lucide.dev) (ISC license).
 
@@ -95,6 +97,7 @@ src/
   lib/ui.js        DOM, dialogs, toasts, file IO
 electron/
   main.mjs         desktop shell: app:// protocol, dialogs, file association
+  signing.mjs      digital IDs, certificate signing and verification
   preload.cjs      minimal bridge exposed to the page as window.inkstoneDesktop
 ```
 
@@ -105,7 +108,14 @@ electron/
 - Compare checks text only, page by page. It doesn't detect formatting or image changes, or text that moved to a different page.
 - Applying redactions and strong compression turn the affected pages into images. Run OCR afterwards to make them searchable again.
 - OCR in languages other than English downloads that language's data the first time.
-- Not implemented yet: digital (certificate) signatures, PDF/A conversion, and export to Office formats.
+- Digital signature limitations:
+  - Signing is only available in the desktop app.
+  - Signatures use your computer's clock, not a trusted timestamp server.
+  - Only RSA certificates are supported.
+  - Signatures added to an already-signed document have no visible stamp.
+  - Self-signed IDs show as "identity not verified" to recipients unless they choose to trust your certificate.
+  - "Trusted" means the certificate chains to a standard public certificate authority. It doesn't use the Windows certificate store or Adobe's trust list.
+- Not implemented yet: PDF/A conversion and export to Office formats.
 
 ## License
 

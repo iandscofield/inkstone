@@ -14,7 +14,7 @@ const s = (tag, attrs = {}) => {
 };
 
 const RECT_TYPES = new Set(['rect', 'ellipse', 'highlight', 'underline', 'whiteout', 'redact', 'text', 'stamp', 'image']);
-const DRAG_TOOLS = new Set(['rect', 'ellipse', 'highlight', 'underline', 'whiteout', 'redact', 'line', 'arrow', 'ink', 'text', 'field-text', 'field-check', 'field-dropdown', 'field-radio', 'link']);
+const DRAG_TOOLS = new Set(['rect', 'ellipse', 'highlight', 'underline', 'whiteout', 'redact', 'line', 'arrow', 'ink', 'text', 'field-text', 'field-check', 'field-dropdown', 'field-radio', 'link', 'digisign']);
 const FONT = 'Helvetica, Arial, sans-serif';
 export const TYPE_LABELS = {
   rect: 'Rectangle', ellipse: 'Ellipse', highlight: 'Highlight', underline: 'Underline', whiteout: 'Whiteout',
@@ -305,7 +305,7 @@ export class Annotator {
       else if (this.tool === 'line' || this.tool === 'arrow') draft = { ...base, x1: x, y1: y, x2: x, y2: y };
       else draft = { ...base, x, y, w: 0, h: 0 };
       if (this.tool === 'highlight') draft.color = st.color === '#d93025' ? '#ffd400' : st.color;
-      if (this.tool.startsWith('field') || this.tool === 'link') Object.assign(draft, { type: 'rect', color: this.tool === 'link' ? '#2563eb' : '#4060b0', width: 1 });
+      if (this.tool.startsWith('field') || this.tool === 'link' || this.tool === 'digisign') Object.assign(draft, { type: 'rect', color: this.tool.startsWith('field') ? '#4060b0' : '#2563eb', width: 1 });
       this.drag = { mode: 'create', p, x0: x, y0: y, draft, tool: this.tool };
       p.svg.setPointerCapture(e.pointerId);
       e.preventDefault();
@@ -368,7 +368,7 @@ export class Annotator {
       return;
     }
     if (tiny && a.type !== 'ink') return;
-    if (d.tool.startsWith('field-') || d.tool === 'link') {
+    if (d.tool.startsWith('field-') || d.tool === 'link' || d.tool === 'digisign') {
       // Form fields and links are written straight into the document.
       await this.app.createFromRect(d.tool, p.index, b);
       return;

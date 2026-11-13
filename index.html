@@ -60,6 +60,7 @@
         </div>
         <div class="segment">
           <button class="icon labeled" data-cmd="signature" title="Fill &amp; sign"><i data-lucide="signature"></i><span>Sign</span></button>
+          <button class="icon" data-tool="digisign" title="Sign with a digital ID (certificate) — drag where the signature goes"><i data-lucide="badge-check"></i></button>
           <button class="icon" data-cmd="stampMenu" title="Stamp"><i data-lucide="stamp"></i></button>
           <button class="icon" data-cmd="insertImage" title="Insert image"><i data-lucide="image-plus"></i></button>
         </div>
@@ -98,6 +99,7 @@
         <button data-tab="pages" class="active" title="Pages"><i data-lucide="layout-grid"></i></button>
         <button data-tab="outline" title="Bookmarks"><i data-lucide="bookmark"></i></button>
         <button data-tab="comments" title="Comments"><i data-lucide="message-square"></i></button>
+        <button data-tab="signatures" title="Signatures"><i data-lucide="shield-check"></i></button>
       </nav>
 
       <aside class="sidebar" id="sidebar">
@@ -121,6 +123,10 @@
         <div class="tab-body" data-tab-body="comments" hidden>
           <div class="side-head"><h2>Comments</h2></div>
           <div id="comments" class="comments"></div>
+        </div>
+        <div class="tab-body" data-tab-body="signatures" hidden>
+          <div class="side-head"><h2>Signatures</h2></div>
+          <div id="signatures" class="signatures"></div>
         </div>
       </aside>
 
@@ -203,6 +209,8 @@
         </section>
         <section class="card">
           <h3>Protect</h3>
+          <button class="item" data-cmd="digitalSign" data-needs-doc><i data-lucide="badge-check"></i>Sign with digital ID</button>
+          <button class="item" data-cmd="digitalIds"><i data-lucide="key-round"></i>Digital IDs</button>
           <button class="item" data-cmd="encrypt" data-needs-doc><i data-lucide="lock"></i>Encrypt with password</button>
           <button class="item" data-cmd="removeSecurity" data-needs-doc><i data-lucide="lock-open"></i>Remove security</button>
         </section>

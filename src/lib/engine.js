@@ -629,6 +629,77 @@ export const scrubHiddenData = (bytes) =>
     }
   });
 
+// ---------- certificate signature appearance ----------
+
+/**
+ * Draw the visible part of a digital signature into the page: an optional handwritten
+ * signature image plus "Digitally signed by …" details. Returns the bytes and the
+ * widget rectangle in PDF space for the signature field.
+ */
+export async function drawSignatureAppearance(bytes, pageIndex, rect, { name, date, reason, location, image }) {
+  let widgetRect;
+  const out = await edit(bytes, async (doc) => {
+    const page = doc.getPage(pageIndex);
+    const g = pageGeom(page);
+    const r = visualRectToPdf(g, rect.x, rect.y, rect.w, rect.h);
+    widgetRect = [r.x, r.y, r.x + r.width, r.y + r.height];
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+    const pad = Math.min(6, rect.h * 0.08);
+    let textX = rect.x + pad;
+    let textW = rect.w - pad * 2;
+    if (image) {
+      const { bytes: imgBytes, png } = dataUrlToBytes(image);
+      const img = png ? await doc.embedPng(imgBytes) : await doc.embedJpg(imgBytes);
+      const boxW = rect.w * 0.45 - pad;
+      const boxH = rect.h - pad * 2;
+      const s = Math.min(boxW / img.width, boxH / img.height);
+      const w = img.width * s, hgt = img.height * s;
+      const ix = rect.x + pad + (boxW - w) / 2, iy = rect.y + pad + (boxH - hgt) / 2;
+      const [x, y] = v2p(g, ix, iy + hgt);
+      page.drawImage(img, { x, y, width: w, height: hgt, rotate: degrees(g.r) });
+      textX = rect.x + rect.w * 0.45 + pad;
+      textW = rect.w * 0.55 - pad * 2;
+    }
+    const lines = [
+      { t: 'Digitally signed by', f: font, k: 0.8 },
+      { t: name, f: bold, k: 1.15 },
+      { t: `Date: ${date}`, f: font, k: 0.8 },
+      ...(reason ? [{ t: `Reason: ${reason}`, f: font, k: 0.8 }] : []),
+      ...(location ? [{ t: `Location: ${location}`, f: font, k: 0.8 }] : []),
+    ].map((l) => ({ ...l, t: safeText(l.f, l.t) }));
+    const units = lines.reduce((n, l) => n + l.k * 1.25, 0);
+    // Fit both the box height and the widest line.
+    let size = (rect.h - pad * 2) / units;
+    for (const l of lines) size = Math.min(size, textW / Math.max(1, l.f.widthOfTextAtSize(l.t, l.k)));
+    let y = rect.y + pad + ((rect.h - pad * 2) - units * size) / 2;
+    const ink = rgb(0.1, 0.14, 0.35);
+    for (const l of lines) {
+      y += l.k * size * 1.25;
+      drawTextVisual(page, g, l.t, textX, y - l.k * size * 0.3, { font: l.f, size: l.k * size, color: ink });
+    }
+  });
+  return { bytes: out, widgetRect };
+}
+
+/** A visual rectangle on a page as [x1, y1, x2, y2] in PDF user space. */
+export async function pdfRectFor(bytes, pageIndex, rect) {
+  const doc = await load(bytes);
+  const r = visualRectToPdf(pageGeom(doc.getPage(pageIndex)), rect.x, rect.y, rect.w, rect.h);
+  return [r.x, r.y, r.x + r.width, r.y + r.height];
+}
+
+/** True if the document already contains a certificate signature. */
+export function hasDigitalSignature(bytes) {
+  // ByteRange only appears in signature dictionaries; scanning raw bytes avoids a full parse.
+  const needle = [47, 66, 121, 116, 101, 82, 97, 110, 103, 101]; // "/ByteRange"
+  outer: for (let i = 0; i <= bytes.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle[j]) continue outer;
+    return true;
+  }
+  return false;
+}
+
 // ---------- links ----------
 
 /** target: {url} or {page} (0-based). */
