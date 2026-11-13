@@ -1,7 +1,7 @@
 // Narrow, explicit bridge between the sandboxed page and the Electron main process.
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('pdfProDesktop', {
+contextBridge.exposeInMainWorld('inkstoneDesktop', {
   platform: process.platform,
   ready: () => ipcRenderer.invoke('renderer-ready'),
   openDialog: () => ipcRenderer.invoke('open-dialog'),

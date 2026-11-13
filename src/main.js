@@ -6,29 +6,40 @@ import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
 import { Annotator, TYPE_LABELS } from './annotations.js';
 import * as tools from './tools.js';
-import { createIcons, ArrowDownUp, Bookmark, Check, ChevronDown, ChevronUp, Circle, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, Hand, Hash, Heading, Highlighter, ImagePlus, Info, Layers, LayoutGrid, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Signature, Slash, Square, SquareCheck, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2 } from 'lucide';
+import { createIcons, ArrowDownUp, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink } from 'lucide';
 
-const ICONS = { ArrowDownUp, Bookmark, Check, ChevronDown, ChevronUp, Circle, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, Hand, Hash, Heading, Highlighter, ImagePlus, Info, Layers, LayoutGrid, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Signature, Slash, Square, SquareCheck, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2 };
+const ICONS = { ArrowDownUp, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink };
 
 const MAX_HISTORY = 40;
 
-const state = {
-  bytes: null, // current unencrypted PDF bytes (annotations not yet flattened)
-  pdf: null, // pdf.js document for rendering
-  fileName: 'document.pdf',
-  fileHandle: null,
-  security: null, // {userPassword, ownerPassword, permissions} applied on save
-  dirty: false,
-  busy: false,
-  undo: [],
-  redo: [],
-};
+const MAX_HISTORY_BYTES = 400 * 1024 * 1024; // cap undo memory for large documents
+
+/** Per-document state. Each open tab owns one; `state` always points at the active tab's. */
+function makeDoc() {
+  return {
+    id: Math.random().toString(36).slice(2),
+    bytes: null, // current unencrypted PDF bytes (annotations not yet flattened)
+    pdf: null, // pdf.js document for rendering
+    fileName: 'document.pdf',
+    fileHandle: null,
+    security: null, // {userPassword, ownerPassword, permissions} applied on save
+    dirty: false,
+    busy: false,
+    undo: [],
+    redo: [],
+    annots: [], // annotation list while the tab is in the background
+    view: null, // {top, left, zoomMode, scale} while in the background
+  };
+}
+
+let state = makeDoc();
+const tabs = [state];
 
 const app = {
-  state,
+  get state() { return state; },
   get pageCount() { return state.pdf?.numPages || 0; },
   get current() { return viewer.current; },
-  author: () => localStorage.getItem('pdfpro.author') || 'PDF Pro user',
+  author: () => localStorage.getItem('inkstone.author') || 'Inkstone user',
 };
 
 // ---------- core components ----------
@@ -68,7 +79,8 @@ function snapshot() {
 
 function pushUndo(snap) {
   state.undo.push(snap);
-  if (state.undo.length > MAX_HISTORY) state.undo.shift();
+  const historyBytes = () => [...new Set(state.undo.map((s) => s.bytes))].reduce((n, b) => n + (b?.length || 0), 0);
+  while (state.undo.length > MAX_HISTORY || (state.undo.length > 1 && historyBytes() > MAX_HISTORY_BYTES)) state.undo.shift();
   state.redo = [];
   state.dirty = true;
   updateUI();
@@ -180,35 +192,54 @@ async function toPdfBytes(files) {
   const out = [];
   for (const f of pdfs) {
     const res = await unlock(await readBytes(f), f.name);
-    if (res) out.push({ name: f.name, ...res });
+    if (!res) continue;
+    // Restore markup saved by Inkstone as editable objects.
+    const { bytes, annots: saved } = await E.extractEditableAnnotations(res.bytes);
+    const pages = (await E.load(bytes)).getPageCount();
+    out.push({ name: f.name, ...res, bytes, annots: saved, pages });
   }
   if (images.length) {
     const imgs = await Promise.all(images.map(async (f) => ({ bytes: await readBytes(f), type: f.type === 'image/png' ? 'image/png' : 'image/jpeg' })));
-    out.push({ name: `${baseName(images[0].name)}.pdf`, bytes: await E.imagesToPdf(imgs) });
+    out.push({ name: `${baseName(images[0].name)}.pdf`, bytes: await E.imagesToPdf(imgs), annots: [], pages: imgs.length });
   }
   return out;
 }
 
+/** Combine several opened files into one byte array, shifting their editable markup to match. */
+async function combine(docs, base = null, at = 0) {
+  let bytes = base;
+  let offset = at;
+  const list = [];
+  for (const d of docs) {
+    bytes = bytes ? await E.insertDocument(bytes, d.bytes, offset) : d.bytes;
+    list.push(...d.annots.map((a) => ({ ...a, page: a.page + offset })));
+    offset += d.pages;
+  }
+  return { bytes, annots: list, count: offset - at };
+}
+
 async function openFiles(files, handle = null) {
   if (!files.length) return;
-  if (!(await confirmDiscard())) return;
+  // A file that is already open just gets its tab focused.
+  if (handle?.path) {
+    const open = tabs.findIndex((t) => t.fileHandle?.path === handle.path);
+    if (open >= 0) return switchTab(open);
+  }
   setBusy('Opening');
   try {
     const docs = await toPdfBytes(files);
     if (!docs.length) return;
-    let bytes = docs[0].bytes;
-    for (const d of docs.slice(1)) {
-      const n = (await E.load(bytes)).getPageCount();
-      bytes = await E.insertDocument(bytes, d.bytes, n);
-    }
+    const { bytes, annots: saved } = await combine(docs);
+    // Reuse the current tab if it is empty; otherwise open a new one.
+    if (state.bytes) await switchTab(tabs.push(makeDoc()) - 1);
     Object.assign(state, {
       bytes, fileName: docs.length > 1 ? 'Combined.pdf' : docs[0].name, fileHandle: docs.length === 1 && files[0].type === 'application/pdf' ? handle : null,
       security: docs[0].security || null, dirty: docs.length > 1 || !files[0].name.endsWith('.pdf'), undo: [], redo: [],
     });
-    annots.restore([]);
+    annots.restore(saved);
     viewer.zoomMode = 'fit-width';
     await reload();
-    document.title = `${state.fileName} – PDF Pro`;
+    renderTabs();
     if (docs[0].security) toast('Document unlocked. It will stay password-protected when saved unless you remove security.');
   } catch (e) {
     console.error(e);
@@ -222,31 +253,91 @@ async function insertFiles(files, at) {
   if (!state.bytes) return openFiles(files);
   const docs = await toPdfBytes(files);
   if (!docs.length) return;
-  let count = 0;
-  const counts = await Promise.all(docs.map(async (d) => (await E.load(d.bytes)).getPageCount()));
-  count = counts.reduce((a, b) => a + b, 0);
+  const count = docs.reduce((n, d) => n + d.pages, 0);
   const pos = at ?? app.pageCount;
-  await runOp('Inserting pages', async (b) => {
-    let out = b;
-    let offset = pos;
-    for (const [k, d] of docs.entries()) {
-      out = await E.insertDocument(out, d.bytes, offset);
-      offset += counts[k];
-    }
-    return out;
+  let incoming = [];
+  const ok = await runOp('Inserting pages', async (b) => {
+    const res = await combine(docs, b, pos);
+    incoming = res.annots;
+    return res.bytes;
   }, { remap: (i) => (i >= pos ? i + count : i) });
+  if (!ok) return;
+  if (incoming.length) {
+    annots.list.push(...incoming);
+    annots.renderAll();
+    app.onAnnotationsChanged();
+  }
   toast(`Inserted ${count} page${count === 1 ? '' : 's'}`);
 }
 app.insertFiles = insertFiles;
 
-async function confirmDiscard() {
-  if (!state.dirty || !state.bytes) return true;
+async function confirmDiscard(doc = state) {
+  if (!doc.dirty || !doc.bytes) return true;
   const { value } = await dialog({
     title: 'Unsaved changes',
-    body: h('p', {}, `Discard unsaved changes to "${state.fileName}"?`),
+    body: h('p', {}, `Discard unsaved changes to "${doc.fileName}"?`),
     buttons: [{ label: 'Cancel', value: null }, { label: 'Discard', value: 'ok', primary: true }],
   });
   return !!value;
+}
+
+// ---------- tabs ----------
+
+/** Make tabs[i] the active document, parking the current one in the background. */
+async function switchTab(i) {
+  const next = tabs[i];
+  if (!next) return;
+  if (next !== state) {
+    state.annots = annots.snapshot();
+    state.view = { top: viewer.wrap.scrollTop, left: viewer.wrap.scrollLeft, zoomMode: viewer.zoomMode, scale: viewer.scale };
+    state = next;
+    annots.restore(state.annots || []);
+    app.renderProps(null);
+    if (state.view) { viewer.zoomMode = state.view.zoomMode; viewer.scale = state.view.scale; } else viewer.zoomMode = 'fit-width';
+    await viewer.setDocument(state.pdf);
+    if (state.view) { viewer.wrap.scrollTop = state.view.top; viewer.wrap.scrollLeft = state.view.left; viewer.updateCurrent(true); }
+    thumbs.setDocument(state.pdf);
+    thumbs.setCurrent(viewer.current);
+    $('#dropHint').hidden = !!state.pdf;
+    $('#searchInput').value = '';
+    $('#searchStatus').textContent = '';
+    renderOutline();
+    app.onAnnotationsChanged();
+  }
+  renderTabs();
+  updateUI();
+}
+
+async function closeTab(i) {
+  const doc = tabs[i];
+  if (!doc) return;
+  if (doc !== state) await switchTab(i);
+  if (!(await confirmDiscard(doc))) return;
+  tabs.splice(i, 1);
+  doc.pdf?.destroy();
+  if (!tabs.length) tabs.push(makeDoc());
+  // Force switchTab to load the neighbour even though `state` is the closed doc.
+  state = makeDoc();
+  await switchTab(Math.min(i, tabs.length - 1));
+}
+
+function renderTabs() {
+  const strip = $('#tabstrip');
+  strip.replaceChildren();
+  for (const [i, t] of tabs.entries()) {
+    if (!t.bytes && tabs.length === 1) break;
+    const tab = h('div', {
+      className: `tab${t === state ? ' active' : ''}${t.dirty ? ' dirty' : ''}`,
+      title: t.fileHandle?.path || t.fileName,
+      onclick: () => switchTab(i),
+      onauxclick: (e) => { if (e.button === 1) closeTab(i); },
+    },
+    h('span', { className: 'tab-name' }, t.bytes ? t.fileName : 'New tab'),
+    h('button', { className: 'tab-close', title: 'Close (Ctrl+W)', onclick: (e) => { e.stopPropagation(); closeTab(i); } }, '×'));
+    strip.append(tab);
+  }
+  if (state.bytes) strip.append(h('button', { className: 'tab-new', title: 'Open another document (Ctrl+O)', onclick: () => openCommand() }, '+'));
+  document.title = state.bytes ? `${state.fileName} – Inkstone` : 'Inkstone';
 }
 
 /** Files handed over by the desktop app (Open dialog, "Open with", double-click). */
@@ -257,7 +348,7 @@ function openDesktopFiles(list) {
 }
 
 async function openCommand() {
-  if (window.pdfProDesktop) return openDesktopFiles(await window.pdfProDesktop.openDialog());
+  if (window.inkstoneDesktop) return openDesktopFiles(await window.inkstoneDesktop.openDialog());
   if (window.showOpenFilePicker) {
     try {
       const handles = await window.showOpenFilePicker({
@@ -282,17 +373,19 @@ async function save(saveAs = false) {
       buttons: [{ label: 'Cancel', value: null }, { label: 'Apply & save', value: 'ok', primary: true }],
     });
     if (!value) return;
-    if (!(await tools.applyRedactions(app))) return;
+    if (!(await tools.applyRedactions(app, { ask: false }))) return;
   }
   setBusy('Saving');
   try {
-    const out = await E.prepareForSave(await app.outputBytes(), state.security);
+    // Markup is drawn in for every reader, but stays editable when reopened in Inkstone.
+    const withMarkup = annots.list.length ? await E.saveEditableAnnotations(state.bytes, annots.list) : state.bytes;
+    const out = await E.prepareForSave(withMarkup, state.security);
     const handle = await saveBytes(out, state.fileName, saveAs ? null : state.fileHandle);
     if (handle === undefined) return;
     if (handle?.name) state.fileName = handle.name;
     state.fileHandle = handle || null;
     state.dirty = false;
-    document.title = `${state.fileName} – PDF Pro`;
+    renderTabs();
     toast(handle ? `Saved ${state.fileName}` : `Downloaded ${state.fileName}`);
   } catch (e) {
     console.error(e);
@@ -330,7 +423,7 @@ async function print() {
   setBusy('Preparing print');
   try {
     const out = await app.outputBytes();
-    if (window.pdfProDesktop) return await printAsImages(out);
+    if (window.inkstoneDesktop) return await printAsImages(out);
     const url = URL.createObjectURL(new Blob([out], { type: 'application/pdf' }));
     const frame = h('iframe', { src: url, style: { position: 'fixed', right: 0, bottom: 0, width: '1px', height: '1px', border: 0, opacity: 0 } });
     frame.onload = () => {
@@ -347,11 +440,12 @@ async function print() {
 
 // ---------- form fields (used by annotator) ----------
 
-app.addFormField = (page, type, name, rect) => runOp('Adding form field', (b) => E.addFormField(b, page, type, name, rect));
+app.addFormField = (page, type, name, rect, extra) => runOp('Adding form field', (b) => E.addFormField(b, page, type, name, rect, extra));
+app.createFromRect = (tool, page, rect) => (tool === 'link' ? tools.createLink(app, page, rect) : tools.createFormField(app, tool, page, rect));
 
 // ---------- tools & UI state ----------
 
-const DRAW_TOOLS = ['text', 'highlight', 'underline', 'ink', 'rect', 'ellipse', 'line', 'arrow', 'note', 'whiteout', 'redact', 'field-text', 'field-check', 'place'];
+const DRAW_TOOLS = ['text', 'highlight', 'underline', 'ink', 'rect', 'ellipse', 'line', 'arrow', 'note', 'whiteout', 'redact', 'field-text', 'field-check', 'field-dropdown', 'field-radio', 'link', 'place'];
 
 app.setTool = (tool, { keepPending = false } = {}) => {
   if (!keepPending) annots.pending = null;
@@ -457,21 +551,63 @@ function renderComments() {
   if (!box.children.length) box.append(h('p', { className: 'muted' }, 'No comments or markup yet. Use the Note, Highlight or drawing tools to add some.'));
 }
 
+/** Bookmarks as an editable tree: [{title, page, url, children}] with 0-based page indices. */
+async function readOutline(pdf) {
+  const raw = pdf ? await pdf.getOutline() : null;
+  const toPage = async (dest) => {
+    try {
+      const explicit = typeof dest === 'string' ? await pdf.getDestination(dest) : dest;
+      if (!explicit) return null;
+      return typeof explicit[0] === 'number' ? explicit[0] : await pdf.getPageIndex(explicit[0]);
+    } catch { return null; }
+  };
+  const conv = (items) => Promise.all(items.map(async (it) => ({
+    title: it.title, url: it.url || null, page: it.dest ? await toPage(it.dest) : null, children: it.items?.length ? await conv(it.items) : [],
+  })));
+  return raw ? conv(raw) : [];
+}
+
 async function renderOutline() {
   const box = $('#outline');
+  const pdf = state.pdf;
+  const tree = await readOutline(pdf);
+  if (pdf !== state.pdf) return;
   box.replaceChildren();
-  const outline = state.pdf ? await state.pdf.getOutline() : null;
-  if (!outline?.length) {
-    box.append(h('p', { className: 'muted' }, 'This document has no bookmarks.'));
+  if (!pdf) return;
+
+  const save = (label, next) => runOp(label, (b) => E.setOutline(b, next));
+  const at = (path, t = tree) => path.length === 1 ? { list: t, i: path[0] } : at(path.slice(1), t[path[0]].children);
+  const edit = (path, fn, label) => { const next = structuredClone(tree); const { list, i } = at(path, next); fn(list, i); return save(label, next); };
+  const here = () => ({ title: `Page ${viewer.current + 1}`, page: viewer.current, url: null, children: [] });
+  const askTitle = (v) => prompt('Bookmark', 'Title', v);
+
+  box.append(h('button', {
+    className: 'outline-add',
+    onclick: async () => { const t = await askTitle(here().title); if (t) save('Adding bookmark', [...structuredClone(tree), { ...here(), title: t }]); },
+  }, `+ Bookmark page ${viewer.current + 1}`));
+
+  if (!tree.length) {
+    box.append(h('p', { className: 'muted small' }, 'No bookmarks yet. Go to a page and add one to build a table of contents.'));
     return;
   }
-  const build = (items) => h('ul', {}, items.map((it) => h('li', {},
-    h('a', {
-      href: it.url || '#', target: it.url ? '_blank' : null,
-      onclick: (e) => { if (!it.url) { e.preventDefault(); if (it.dest) viewer.goToDest(it.dest); } },
-    }, it.title),
-    it.items?.length ? build(it.items) : null)));
-  box.append(build(outline));
+  const act = (title, label, fn) => h('button', { className: 'icon sm', title, onclick: (e) => { e.stopPropagation(); fn(); } }, label);
+  const build = (items, base = []) => h('ul', {}, items.map((it, i) => {
+    const path = [...base, i];
+    return h('li', {},
+      h('div', { className: 'outline-row' },
+        h('a', {
+          href: it.url || '#', target: it.url ? '_blank' : null, title: it.url || (it.page != null ? `Page ${it.page + 1}` : ''),
+          onclick: (e) => { if (!it.url) { e.preventDefault(); if (it.page != null) viewer.scrollToPage(it.page); } },
+        }, it.title),
+        h('span', { className: 'outline-actions' },
+          act('Rename', '✎', async () => { const t = await askTitle(it.title); if (t) edit(path, (l, k) => { l[k].title = t; }, 'Renaming bookmark'); }),
+          act(`Add child for page ${viewer.current + 1}`, '+', async () => { const t = await askTitle(here().title); if (t) edit(path, (l, k) => { l[k].children.push({ ...here(), title: t }); }, 'Adding bookmark'); }),
+          act('Move up', '↑', () => i > 0 && edit(path, (l, k) => { [l[k - 1], l[k]] = [l[k], l[k - 1]]; }, 'Moving bookmark')),
+          act('Move down', '↓', () => i < items.length - 1 && edit(path, (l, k) => { [l[k + 1], l[k]] = [l[k], l[k + 1]]; }, 'Moving bookmark')),
+          act('Delete', '×', () => edit(path, (l, k) => { l.splice(k, 1); }, 'Deleting bookmark')))),
+      it.children?.length ? build(it.children, path) : null);
+  }));
+  box.append(build(tree));
 }
 
 function updateStatus() {
@@ -491,9 +627,7 @@ function updateUI() {
   $('#pageCount').textContent = `/ ${app.pageCount}`;
   $$('#toolbar button').forEach((b) => { b.disabled = !has; });
   document.body.classList.toggle('no-doc', !has);
-  const name = $('#docName');
-  name.textContent = has ? state.fileName : '';
-  name.classList.toggle('dirty', has && state.dirty);
+  renderTabs();
   updateStatus();
 }
 
@@ -501,7 +635,7 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   // Keep the desktop window's native min/max/close buttons in sync with the theme.
   const css = getComputedStyle(document.documentElement);
-  window.pdfProDesktop?.setTitleBarTheme?.({ color: css.getPropertyValue('--chrome').trim(), symbolColor: css.getPropertyValue('--text').trim() });
+  window.inkstoneDesktop?.setTitleBarTheme?.({ color: css.getPropertyValue('--chrome').trim(), symbolColor: css.getPropertyValue('--text').trim() });
 }
 
 // ---------- commands ----------
@@ -511,7 +645,7 @@ const sel = () => thumbs.targets(viewer.current);
 const commands = {
   open: openCommand,
   newBlank: async () => {
-    if (!(await confirmDiscard())) return;
+    if (state.bytes) await switchTab(tabs.push(makeDoc()) - 1);
     Object.assign(state, { bytes: await E.createBlank(), fileName: 'Untitled.pdf', fileHandle: null, security: null, dirty: true, undo: [], redo: [] });
     annots.restore([]);
     await reload();
@@ -530,11 +664,11 @@ const commands = {
   toggleTheme: () => {
     const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
     applyTheme(theme);
-    localStorage.setItem('pdfpro.theme', theme);
+    localStorage.setItem('inkstone.theme', theme);
   },
   togglePanel: () => {
     document.body.classList.toggle('panel-collapsed');
-    localStorage.setItem('pdfpro.panel', document.body.classList.contains('panel-collapsed') ? 'hidden' : 'shown');
+    localStorage.setItem('inkstone.panel', document.body.classList.contains('panel-collapsed') ? 'hidden' : 'shown');
     if (viewer.zoomMode.startsWith('fit')) setTimeout(() => viewer.setZoom(viewer.zoomMode), 0);
   },
   rotateLeft: () => { const t = sel(); return runOp('Rotating', (b) => E.rotatePages(b, t, -90), { flatten: t }); },
@@ -573,6 +707,9 @@ const commands = {
   bates: () => tools.bates(app),
   applyRedactions: () => tools.applyRedactions(app),
   findRedact: () => tools.findAndRedact(app),
+  manageFields: () => tools.manageFields(app),
+  removeLinks: () => tools.removeLinks(app, sel()),
+  compare: () => tools.compare(app),
   flattenAnnots: () => tools.flattenAnnotations(app),
   metadata: () => tools.metadata(app),
   fillForm: () => tools.fillForm(app),
@@ -653,6 +790,8 @@ document.addEventListener('keydown', (e) => {
       o: 'open', p: 'print', z: e.shiftKey ? 'redo' : 'undo', y: 'redo', s: e.shiftKey ? 'saveAs' : 'save',
       '=': 'zoomIn', '+': 'zoomIn', '-': 'zoomOut',
     };
+    if (k === 'w' && state.bytes) { e.preventDefault(); closeTab(tabs.indexOf(state)); return; }
+    if (e.key === 'Tab' && tabs.length > 1) { e.preventDefault(); switchTab((tabs.indexOf(state) + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length); return; }
     if (k === 'f') { e.preventDefault(); $('#searchInput').focus(); $('#searchInput').select(); return; }
     if (k === 'h' && state.pdf) { e.preventDefault(); annots.markSelection('highlight'); return; }
     if (k === 'u' && state.pdf && selectionInViewer()) { e.preventDefault(); annots.markSelection('underline'); return; }
@@ -686,15 +825,24 @@ document.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.dirty && state.bytes) { e.preventDefault(); e.returnValue = ''; }
+  if (tabs.some((t) => t.dirty && t.bytes)) { e.preventDefault(); e.returnValue = ''; }
 });
 
 // ---------- boot ----------
 
+// One-time migration of settings and saved signatures from the old "PDF Pro" name.
+try {
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    const nk = k.startsWith('pdfpro.') && `inkstone.${k.slice(7)}`;
+    if (nk && localStorage.getItem(nk) == null) localStorage.setItem(nk, localStorage.getItem(k));
+  }
+} catch { /* storage unavailable */ }
+
 createIcons({ icons: ICONS });
-if (window.pdfProDesktop) document.body.classList.add('desktop');
-if (localStorage.getItem('pdfpro.panel') === 'hidden') document.body.classList.add('panel-collapsed');
-applyTheme(localStorage.getItem('pdfpro.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+if (window.inkstoneDesktop) document.body.classList.add('desktop');
+if (localStorage.getItem('inkstone.panel') === 'hidden') document.body.classList.add('panel-collapsed');
+applyTheme(localStorage.getItem('inkstone.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
 app.setTool('select');
 updateUI();
 renderComments();
@@ -706,9 +854,9 @@ if (fileParam) {
 }
 
 // Desktop app: receive files from "Open with" / double-click, now and later.
-if (window.pdfProDesktop) {
-  window.pdfProDesktop.onOpenFiles(openDesktopFiles);
-  window.pdfProDesktop.ready().then(openDesktopFiles);
+if (window.inkstoneDesktop) {
+  window.inkstoneDesktop.onOpenFiles(openDesktopFiles);
+  window.inkstoneDesktop.ready().then(openDesktopFiles);
 }
 
-window.pdfPro = app; // handy for debugging from the console
+window.inkstone = app; // handy for debugging from the console

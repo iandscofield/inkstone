@@ -6,7 +6,7 @@ import electron from 'electron';
 const server = await createServer();
 await server.listen();
 const url = server.resolvedUrls.local[0].replace(/\/$/, '');
-const child = spawn(electron, ['.', ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, PDFPRO_DEV_URL: url } });
+const child = spawn(electron, ['.', ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, INKSTONE_DEV_URL: url } });
 child.on('exit', async (code) => {
   await server.close();
   process.exit(code ?? 0);

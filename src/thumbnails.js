@@ -102,12 +102,12 @@ export class Thumbnails {
 
   onDragStart(e, i) {
     if (!this.selected.has(i)) { this.selected = new Set([i]); this.paintSelection(); }
-    e.dataTransfer.setData('application/x-pdfpro-pages', JSON.stringify([...this.selected]));
+    e.dataTransfer.setData('application/x-inkstone-pages', JSON.stringify([...this.selected]));
     e.dataTransfer.effectAllowed = 'move';
   }
 
   onDragOver(e, div) {
-    const isPages = e.dataTransfer.types.includes('application/x-pdfpro-pages');
+    const isPages = e.dataTransfer.types.includes('application/x-inkstone-pages');
     const isFiles = e.dataTransfer.types.includes('Files');
     if (!isPages && !isFiles) return;
     e.preventDefault();
@@ -128,7 +128,7 @@ export class Thumbnails {
       this.cb.onDropFiles?.([...e.dataTransfer.files], target);
       return;
     }
-    const raw = e.dataTransfer.getData('application/x-pdfpro-pages');
+    const raw = e.dataTransfer.getData('application/x-inkstone-pages');
     if (!raw) return;
     e.preventDefault();
     e.stopPropagation();

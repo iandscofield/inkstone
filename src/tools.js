@@ -2,7 +2,7 @@
 import JSZip from 'jszip';
 import * as E from './lib/engine.js';
 import { renderPageToCanvas, canvasToBytes, pageText, openPdf } from './lib/pdfjs.js';
-import { h, toast, dialog, formValues, pickFiles, downloadBlob, parsePageRange, baseName, setStatus, uid } from './lib/ui.js';
+import { h, toast, dialog, formValues, pickFiles, readBytes, prompt, downloadBlob, parsePageRange, baseName, setStatus, uid } from './lib/ui.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const rangeRow = (value = 'all') => `<label>Pages</label><input type="text" name="range" value="${value}" placeholder="all, or e.g. 1-3, 5, 8-">`;
@@ -154,7 +154,7 @@ export async function stamp(app) {
   app.annots.startPlacing({ kind: 'stamp', text, color: chosen.color, w, h: 46 });
 }
 
-const SIG_KEY = 'pdfpro.signatures';
+const SIG_KEY = 'inkstone.signatures';
 const loadSigs = () => { try { return JSON.parse(localStorage.getItem(SIG_KEY)) || []; } catch { return []; } };
 
 function trimCanvas(c, minAlpha = 24) {
@@ -398,10 +398,25 @@ export async function bates(app) {
 }
 
 /** Rasterize pages with redaction marks so the covered content is truly gone. */
-export async function applyRedactions(app) {
+export async function applyRedactions(app, { ask = true } = {}) {
   const marks = app.annots.list.filter((a) => a.type === 'redact');
   if (!marks.length) { toast('Nothing to redact. Use the Redact tool or "Find & redact" to mark content first.'); return true; }
   const pages = [...new Set(marks.map((a) => a.page))].sort((a, b) => a - b);
+  // Scrubbing hidden data is the safe default; when called from Save it happens without asking.
+  let scrub = true;
+  if (ask) {
+    const box = h('input', { type: 'checkbox', checked: true });
+    const { value } = await dialog({
+      title: 'Apply redactions',
+      body: h('div', {},
+        h('p', {}, `Permanently remove ${marks.length} marked area(s) on ${pages.length} page(s)? Those pages are converted to images so the covered content can't be recovered.`),
+        h('label', { style: { display: 'flex', gap: '6px', alignItems: 'flex-start' } }, box,
+          h('span', {}, 'Also remove hidden information', h('br'), h('span', { className: 'muted small' }, 'Document properties and XMP metadata, file attachments, scripts and automatic actions.')))),
+      buttons: [{ label: 'Cancel', value: null }, { label: 'Redact', value: 'ok', primary: true }],
+    });
+    if (!value) return false;
+    scrub = box.checked;
+  }
   const dpiScale = 2; // 144 dpi
   const ok = await app.runOp('Applying redactions', async (bytes) => {
     const pdf = await openPdf(bytes);
@@ -414,7 +429,8 @@ export async function applyRedactions(app) {
       replacements.push({ index: i, image: await canvasToBytes(canvas, 'image/jpeg', 0.9), png: false, vw: viewport.width / dpiScale, vh: viewport.height / dpiScale });
     }
     pdf.destroy();
-    return E.rasterizePages(bytes, replacements);
+    const out = await E.rasterizePages(bytes, replacements);
+    return scrub ? E.scrubHiddenData(out) : out;
   });
   if (ok) {
     app.annots.list = app.annots.list.filter((a) => a.type !== 'redact');
@@ -423,6 +439,23 @@ export async function applyRedactions(app) {
     toast(`Redacted ${marks.length} area(s) on ${pages.length} page(s). Run OCR to make the remaining text searchable again.`, 'info', 6000);
   }
   return ok;
+}
+
+/**
+ * Visual-coordinate box around characters [from, to) of a pdf.js text item,
+ * following the text's direction (works for rotated text too).
+ */
+function textBox(p, it, from, to) {
+  const [a, b, c, d, e, f] = it.transform;
+  const fh = Math.hypot(c, d);
+  const len = it.str.length || 1;
+  const ux = a / (Math.hypot(a, b) || 1), uy = b / (Math.hypot(a, b) || 1);
+  const s0 = (from / len) * it.width, s1 = (to / len) * it.width;
+  const corners = [[s0, -0.25 * fh], [s1, -0.25 * fh], [s1, 0.95 * fh], [s0, 0.95 * fh]].map(([sx, sy]) =>
+    p.base.convertToViewportPoint(e + sx * ux - sy * uy, f + sx * uy + sy * ux));
+  const xs = corners.map((q) => q[0]), ys = corners.map((q) => q[1]);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
 
 /** Mark every occurrence of a phrase for redaction. */
@@ -451,17 +484,7 @@ export async function findAndRedact(app) {
       let m;
       while ((m = re.exec(it.str))) {
         if (!m[0].length) { re.lastIndex++; continue; }
-        const [a, b, c, d, e, f] = it.transform;
-        const fh = Math.hypot(c, d);
-        const len = it.str.length || 1;
-        const ux = a / (Math.hypot(a, b) || 1), uy = b / (Math.hypot(a, b) || 1);
-        const s0 = (m.index / len) * it.width, s1 = ((m.index + m[0].length) / len) * it.width;
-        // Corners of the match box in PDF space, then to visual coords.
-        const corners = [[s0, -0.25 * fh], [s1, -0.25 * fh], [s1, 0.95 * fh], [s0, 0.95 * fh]].map(([sx, sy]) =>
-          p.base.convertToViewportPoint(e + sx * ux - sy * uy, f + sx * uy + sy * ux));
-        const xs = corners.map((q) => q[0]), ys = corners.map((q) => q[1]);
-        const x = Math.min(...xs), y = Math.min(...ys);
-        marks.push({ id: uid(), type: 'redact', page: p.index, x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y, created: Date.now() });
+        marks.push({ id: uid(), type: 'redact', page: p.index, ...textBox(p, it, m.index, m.index + m[0].length), created: Date.now() });
       }
     }
   }
@@ -505,11 +528,209 @@ export async function metadata(app) {
   });
   if (!value) return;
   const v = formValues(form);
-  if (v.me.trim()) localStorage.setItem('pdfpro.author', v.me.trim());
+  if (v.me.trim()) localStorage.setItem('inkstone.author', v.me.trim());
   if (['title', 'author', 'subject', 'keywords', 'creator'].some((k) => v[k] !== m[k])) await app.runOp('Updating properties', (b) => E.setMetadata(b, v));
 }
 
 // ---------- forms ----------
+
+/** Called after dragging out a box with one of the form-field tools. */
+export async function createFormField(app, tool, page, rect) {
+  const type = { 'field-text': 'text', 'field-check': 'checkbox', 'field-dropdown': 'dropdown', 'field-radio': 'radio' }[tool];
+  const label = { text: 'Text', checkbox: 'Check', dropdown: 'Choice', radio: 'Group' }[type];
+  const existingGroups = type === 'radio' ? (await E.getFormFields(app.state.bytes)).filter((f) => f.type === 'radio') : [];
+  const body = h('div', { className: 'form-grid' },
+    h('label', {}, type === 'radio' ? 'Group name' : 'Field name'),
+    h('input', { type: 'text', name: 'name', value: existingGroups.at(-1)?.name || `${label}${Date.now() % 10000}`, list: 'radioGroups' }),
+    existingGroups.length ? h('datalist', { id: 'radioGroups' }, existingGroups.map((g) => h('option', { value: g.name }))) : null,
+    type === 'radio' ? [h('label', {}, 'This choice'), h('input', { type: 'text', name: 'value', placeholder: 'e.g. Yes, Small, Option A' })] : null,
+    type === 'dropdown' ? [h('label', {}, 'Choices'), h('textarea', { name: 'options', rows: 5, placeholder: 'One choice per line' })] : null,
+    type === 'radio' ? h('p', { className: 'full muted small' }, 'Radio buttons with the same group name work together: only one in the group can be selected. Draw one button per choice.') : null);
+  const { value, form } = await dialog({
+    title: `New ${type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio button' : type === 'dropdown' ? 'dropdown' : 'text field'}`,
+    body,
+    validate: (f, val) => (val && !formValues(f).name.trim() ? 'Enter a name' : null),
+  });
+  if (!value) return;
+  const v = formValues(form);
+  const extra = {};
+  if (type === 'dropdown') extra.options = (v.options || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  if (type === 'radio') extra.value = v.value?.trim();
+  await app.addFormField(page, type, v.name.trim(), rect, extra);
+}
+
+/** Edit existing fields: rename, required, read-only, choices, delete. */
+export async function manageFields(app) {
+  const fields = (await E.getFormFields(app.state.bytes)).filter((f) => !['button', 'signature', 'unknown'].includes(f.type));
+  if (!fields.length) return toast('No form fields yet. Use the field tools in the toolbar to add some.', 'info', 5000);
+  const rows = fields.map((f, i) => h('tr', {},
+    h('td', {}, h('input', { type: 'text', value: f.name, 'data-i': i, 'data-k': 'rename', style: { width: '100%' } })),
+    h('td', { className: 'muted' }, f.type),
+    h('td', {}, h('input', { type: 'checkbox', checked: !!f.required, 'data-i': i, 'data-k': 'required' })),
+    h('td', {}, h('input', { type: 'checkbox', checked: !!f.readOnly, 'data-i': i, 'data-k': 'readOnly' })),
+    h('td', {}, f.options && f.type !== 'radio' ? h('textarea', { rows: 2, 'data-i': i, 'data-k': 'options', style: { width: '100%' } }, f.options.join('\n')) : ''),
+    h('td', {}, h('input', { type: 'checkbox', 'data-i': i, 'data-k': 'remove', title: 'Delete this field' }))));
+  const body = h('table', { className: 'fields-table' },
+    h('thead', {}, h('tr', {}, ['Name', 'Type', 'Required', 'Read-only', 'Choices', 'Delete'].map((t) => h('th', {}, t)))),
+    h('tbody', {}, rows));
+  const { value, form } = await dialog({ title: `Form fields (${fields.length})`, body, buttons: [{ label: 'Cancel', value: null }, { label: 'Apply', value: 'ok', primary: true }] });
+  if (!value) return;
+  const changes = {};
+  for (const el of form.querySelectorAll('[data-k]')) {
+    const f = fields[+el.dataset.i];
+    const c = (changes[f.name] ||= {});
+    const k = el.dataset.k;
+    if (k === 'rename') { if (el.value.trim() && el.value.trim() !== f.name) c.rename = el.value.trim(); }
+    else if (k === 'options') { const opts = el.value.split('\n').map((s) => s.trim()).filter(Boolean); if (opts.join('\n') !== f.options.join('\n')) c.options = opts; }
+    else if (k === 'remove') { if (el.checked) c.remove = true; }
+    else if (el.checked !== !!f[k]) c[k] = el.checked;
+  }
+  for (const [n, c] of Object.entries(changes)) if (!Object.keys(c).length) delete changes[n];
+  if (!Object.keys(changes).length) return;
+  await app.runOp('Updating form fields', (b) => E.updateFormFields(b, changes));
+}
+
+/** Called after dragging out a box with the Link tool. */
+export async function createLink(app, page, rect) {
+  const { value, form } = await dialog({
+    title: 'Add link',
+    body: `<div class="form-grid">
+      <label><input type="radio" name="kind" value="url" checked> Web address</label><input type="text" name="url" placeholder="https://example.com">
+      <label><input type="radio" name="kind" value="page"> Page in this document</label><input type="number" name="page" min="1" max="${app.pageCount}" value="1">
+      </div>`,
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Add link', value: 'ok', primary: true }],
+    onOpen: (f) => {
+      f.querySelector('[name=url]').addEventListener('focus', () => { f.querySelector('[value=url]').checked = true; });
+      f.querySelector('[name=page]').addEventListener('focus', () => { f.querySelector('[value=page]').checked = true; });
+    },
+    validate: (f, val) => {
+      if (!val) return null;
+      const x = formValues(f);
+      if (x.kind === 'url' && !x.url.trim()) return 'Enter a web address';
+      if (x.kind === 'page' && !(x.page >= 1 && x.page <= app.pageCount)) return `Enter a page from 1 to ${app.pageCount}`;
+      return null;
+    },
+  });
+  if (!value) return;
+  const v = formValues(form);
+  let url = v.url.trim();
+  if (v.kind === 'url' && !/^(https?:|mailto:)/i.test(url)) url = /@/.test(url) && !url.includes('/') ? `mailto:${url}` : `https://${url}`;
+  await app.runOp('Adding link', (b) => E.addLink(b, page, rect, v.kind === 'url' ? { url } : { page: v.page - 1 }));
+}
+
+export async function removeLinks(app, pages) {
+  const label = pages.length === 1 ? `page ${pages[0] + 1}` : `${pages.length} pages`;
+  const { value } = await dialog({ title: 'Remove links', body: h('p', {}, `Remove every link on ${label}?`), buttons: [{ label: 'Cancel', value: null }, { label: 'Remove', value: 'ok', primary: true }] });
+  if (value) await app.runOp('Removing links', (b) => E.removeLinks(b, pages));
+}
+
+// ---------- compare ----------
+
+/** Words of one page with the text item and character range each came from. */
+async function pageWords(page) {
+  const tc = await page.getTextContent();
+  const out = [];
+  tc.items.forEach((it, idx) => {
+    if (!it.str) return;
+    for (const m of it.str.matchAll(/\S+/g)) out.push({ w: m[0], item: it, idx, from: m.index, to: m.index + m[0].length });
+  });
+  return out;
+}
+
+/** Word-level LCS diff. Returns ops: {t:'=',a,b} | {t:'-',a} | {t:'+',b}. */
+function diffWords(a, b) {
+  const n = a.length, m = b.length;
+  if (n * m > 9e6) {
+    // Too large for a table: fall back to treating the page as wholly changed.
+    return [...a.map((x) => ({ t: '-', a: x })), ...b.map((x) => ({ t: '+', b: x }))];
+  }
+  const dp = new Uint32Array((n + 1) * (m + 1));
+  const W = m + 1;
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+    dp[i * W + j] = a[i].w === b[j].w ? dp[(i + 1) * W + j + 1] + 1 : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i].w === b[j].w) { ops.push({ t: '=', a: a[i++], b: b[j++] }); }
+    else if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) ops.push({ t: '-', a: a[i++] });
+    else ops.push({ t: '+', b: b[j++] });
+  }
+  while (i < n) ops.push({ t: '-', a: a[i++] });
+  while (j < m) ops.push({ t: '+', b: b[j++] });
+  return ops;
+}
+
+/** Compare the open document against an older version, report differences and optionally mark them. */
+export async function compare(app) {
+  const [file] = await pickFiles('application/pdf');
+  if (!file) return;
+  setStatus('Comparing…');
+  let older;
+  try {
+    older = await openPdf(await readBytes(file));
+  } catch (e) {
+    setStatus('');
+    return toast(`Could not open ${file.name}: ${e.message}`, 'error');
+  }
+  const cur = app.viewer.pages;
+  const pages = Math.max(cur.length, older.numPages);
+  const results = [];
+  for (let i = 0; i < pages; i++) {
+    setStatus(`Comparing page ${i + 1} of ${pages}…`);
+    const a = i < older.numPages ? await pageWords(await older.getPage(i + 1)) : [];
+    const b = cur[i] ? await pageWords(cur[i].page) : [];
+    const ops = diffWords(a, b);
+    const added = ops.filter((o) => o.t === '+').length, removed = ops.filter((o) => o.t === '-').length;
+    results.push({ page: i, ops, added, removed, onlyOld: i >= cur.length, onlyNew: i >= older.numPages });
+  }
+  older.destroy();
+  setStatus('');
+
+  const changed = results.filter((r) => r.added || r.removed);
+  const totals = changed.reduce((t, r) => ({ added: t.added + r.added, removed: t.removed + r.removed }), { added: 0, removed: 0 });
+  const render = (r) => {
+    const frag = h('div', { className: 'diff-text' });
+    // Collapse long unchanged runs to a few words of context.
+    let run = [];
+    const flush = () => {
+      if (run.length > 16) frag.append(`${run.slice(0, 6).join(' ')} … ${run.slice(-6).join(' ')} `);
+      else if (run.length) frag.append(`${run.join(' ')} `);
+      run = [];
+    };
+    for (const o of r.ops) {
+      if (o.t === '=') { run.push(o.b.w); continue; }
+      flush();
+      frag.append(h(o.t === '+' ? 'ins' : 'del', {}, o.t === '+' ? o.b.w : o.a.w), ' ');
+    }
+    flush();
+    return frag;
+  };
+  const markBox = h('input', { type: 'checkbox', checked: true });
+  const body = h('div', { style: { width: 'min(680px, 86vw)' } },
+    h('p', {}, changed.length
+      ? `Compared with "${file.name}": ${changed.length} page(s) differ — ${totals.added} word(s) added or changed, ${totals.removed} removed.`
+      : `No text differences found compared with "${file.name}".`),
+    changed.length ? h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '10px' } }, markBox, 'Highlight added and changed words in this document (green)') : null,
+    ...changed.map((r) => h('details', { className: 'diff-page', open: changed.length <= 3 },
+      h('summary', {}, `Page ${r.page + 1}`, r.onlyOld ? ' (removed page)' : r.onlyNew ? ' (new page)' : '', h('span', { className: 'muted' }, `  +${r.added} −${r.removed}`)),
+      render(r))),
+    h('p', { className: 'muted small' }, 'Compares the text of each page with the same page in the other file. Formatting and image changes are not detected.'));
+  const { value } = await dialog({ title: 'Compare documents', body, buttons: [{ label: 'Close', value: null }, ...(changed.length ? [{ label: 'Done', value: 'ok', primary: true }] : [])] });
+  if (!value || !markBox.checked) return;
+  const marks = [];
+  for (const r of changed) {
+    const p = cur[r.page];
+    if (!p) continue;
+    for (const o of r.ops) if (o.t === '+') marks.push({ id: uid(), type: 'highlight', page: r.page, ...textBox(p, o.b.item, o.b.from, o.b.to), color: '#22c55e', opacity: 0.35, created: Date.now() });
+  }
+  if (!marks.length) return;
+  app.checkpoint();
+  app.annots.list.push(...marks);
+  app.annots.renderAll();
+  app.onAnnotationsChanged();
+  toast(`Highlighted ${marks.length} changed word(s). Undo removes them all.`);
+}
 
 export async function fillForm(app) {
   const fields = await E.getFormFields(app.state.bytes);
@@ -544,7 +765,7 @@ export async function fillForm(app) {
 export async function ocr(app) {
   const { value, form } = await dialog({
     title: 'Recognize text (OCR)',
-    body: `<p class="muted">Adds an invisible, searchable and selectable text layer to scanned pages. Runs locally; the OCR engine and language data (~10 MB) are downloaded the first time.</p>
+    body: `<p class="muted">Adds an invisible, searchable and selectable text layer to scanned pages. Runs entirely on your computer. English works offline; other languages download their data (a few MB) the first time.</p>
       <div class="form-grid">${rangeRow()}
       <label>Language</label><select name="lang">
         <option value="eng">English</option><option value="spa">Spanish</option><option value="fra">French</option><option value="deu">German</option>
@@ -564,7 +785,14 @@ export async function ocr(app) {
   try {
     prog.update(0, 'Loading OCR engine…');
     const { createWorker } = await import('tesseract.js');
-    worker = await createWorker(v.lang);
+    // The engine and English data ship with the app; other languages download on first use.
+    const local = (p) => new URL(`ocr/${p}`, document.baseURI).href;
+    worker = await createWorker(v.lang, 1, {
+      workerPath: local('worker.min.js'),
+      corePath: local('core'),
+      workerBlobURL: false,
+      ...(v.lang === 'eng' ? { langPath: local('lang') } : {}),
+    });
     const scale = Number(v.scale);
     const results = [];
     for (const [k, i] of idx.entries()) {
@@ -586,7 +814,7 @@ export async function ocr(app) {
   } catch (e) {
     prog.close();
     console.error(e);
-    toast(`OCR failed: ${e.message || e}. An internet connection is required the first time.`, 'error', 7000);
+    toast(`OCR failed: ${e.message || e}. Languages other than English need an internet connection the first time.`, 'error', 7000);
   } finally {
     worker?.terminate();
   }

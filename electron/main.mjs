@@ -1,19 +1,28 @@
-// Electron shell for PDF Pro: serves the built web app over a private app:// scheme
+// Electron shell for Inkstone: serves the built web app over a private app:// scheme
 // and gives it native open/save dialogs and "Open with" (.pdf file association) support.
 import { app, BrowserWindow, protocol, net, ipcMain, dialog, shell, Menu } from 'electron';
 import { readFile, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, cpSync } from 'node:fs';
 import { basename, dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distDir = resolve(here, '..', 'dist');
-const devUrl = process.env.PDFPRO_DEV_URL; // e.g. http://localhost:5173 for live reload
+const devUrl = process.env.INKSTONE_DEV_URL; // e.g. http://localhost:5173 for live reload
 const OPENABLE = new Set(['.pdf', '.png', '.jpg', '.jpeg']);
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
 ]);
+
+// Carry over settings and saved signatures from builds released as "PDF Pro".
+try {
+  const fresh = app.getPath('userData');
+  const old = join(dirname(fresh), 'PDF Pro');
+  if (!existsSync(fresh) && existsSync(old)) cpSync(old, fresh, { recursive: true });
+} catch (e) {
+  console.warn('Settings migration skipped', e);
+}
 
 let win = null;
 let rendererReady = false;
@@ -54,7 +63,7 @@ function createWindow() {
     height: 900,
     minWidth: 800,
     minHeight: 500,
-    title: 'PDF Pro',
+    title: 'Inkstone',
     icon: join(here, '..', 'build', 'icon.png'),
     backgroundColor: '#ffffff',
     show: false,
@@ -72,7 +81,7 @@ function createWindow() {
     },
   });
   win.once('ready-to-show', () => win.show());
-  win.loadURL(devUrl || 'app://pdfpro/index.html');
+  win.loadURL(devUrl || 'app://inkstone/index.html');
 
   // Links in documents open in the system browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -94,7 +103,7 @@ function createWindow() {
       cancelId: 1,
       title: 'Unsaved changes',
       message: 'You have unsaved changes.',
-      detail: 'Close PDF Pro and discard them?',
+      detail: 'Close Inkstone and discard them?',
     });
     if (choice === 0) e.preventDefault();
   });

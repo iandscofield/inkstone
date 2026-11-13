@@ -119,7 +119,7 @@ export function downloadBlob(data, name, mime = 'application/pdf') {
  * overwrite the same file; falls back to a download.
  */
 export async function saveBytes(bytes, name, handle) {
-  const desktop = window.pdfProDesktop;
+  const desktop = window.inkstoneDesktop;
   if (desktop && !handle?.createWritable) {
     const path = await desktop.saveDialog(name);
     if (!path) return undefined;
@@ -156,7 +156,7 @@ export function desktopHandle(path) {
       let data;
       return {
         write: async (bytes) => { data = bytes; },
-        close: () => window.pdfProDesktop.writeFile(path, data),
+        close: () => window.inkstoneDesktop.writeFile(path, data),
       };
     },
   };

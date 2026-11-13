@@ -1,21 +1,22 @@
-# PDF Pro
+# Inkstone
 
-A free, open source PDF editor that runs entirely in your browser. Files are processed locally and never leave your computer. The one exception is the OCR engine, which is downloaded once on first use.
+A free, open source PDF editor for Windows and the browser. Files are processed locally and never leave your computer, and English OCR works offline.
 
 ## Features
 
 | Area | What you can do |
 | --- | --- |
-| **View** | Continuous scroll, zoom (fit width, fit page, presets, Ctrl +/−), page thumbnails, bookmarks/outline, clickable links, text selection, full-text search with highlights, dark mode |
+| **View** | Several documents open at once in tabs. Continuous scroll, zoom (fit width, fit page, presets, Ctrl +/−), page thumbnails, clickable links, text selection, full-text search with highlights, dark mode |
 | **Organize pages** | Drag-and-drop reorder, rotate, delete, duplicate, insert blank pages, extract, split (every N pages or by ranges → .zip), combine/insert PDFs and images, reverse order, crop |
-| **Comment & mark up** | Text boxes, highlight / underline / strikeout (drag an area, or select text and press Ctrl+H), freehand drawing, rectangles, ellipses, lines, arrows, sticky-note comments (saved as real PDF comments), stamps (presets or custom, with optional name and date), images |
-| **Edit** | Edit Text: click a line of existing text to replace it. White-out. Watermarks. Headers, footers and page numbers. Bates numbering. Document properties (metadata) |
-| **Fill & sign** | Draw, type, or upload an image of your signature (white paper backgrounds are removed automatically), or reuse a saved one. Fill existing form fields (text, checkbox, dropdown, list, radio). Create new text fields and checkboxes. Flatten forms |
-| **Redact** | Mark areas by hand, or use **Find & redact** with plain text or regular expressions (e.g. `\d{3}-\d{2}-\d{4}`). Applying redactions rasterizes the affected pages, so the hidden content is permanently removed rather than just covered |
-| **Scan & OCR** | Recognize text in scanned pages (12 languages). Adds an invisible text layer, so scans become searchable and selectable |
+| **Comment & mark up** | Text boxes, highlight / underline / strikeout (drag an area, or select text and press Ctrl+H), freehand drawing, rectangles, ellipses, lines, arrows, sticky-note comments, stamps (presets or custom, with optional name and date), images. **Markup stays editable**: it's visible in every PDF reader after you save, and when you reopen the file in Inkstone it comes back as objects you can move, change or delete |
+| **Edit** | Edit Text: click a line of existing text to replace it. White-out. Watermarks. Headers, footers and page numbers. Bates numbering. Add links to web pages or other pages, and remove them. Create and edit bookmarks (add, nest, rename, reorder, delete). Document properties |
+| **Fill & sign** | Draw, type, or upload an image of your signature (white paper backgrounds are removed automatically), or reuse a saved one. Fill form fields. Create text fields, checkboxes, dropdowns and radio button groups. Manage fields: rename, mark required or read-only, edit choices, delete. Flatten forms |
+| **Review** | Compare with another version: a word-by-word report of what changed on each page, with added or changed words highlighted in the document |
+| **Redact** | Mark areas by hand, or use **Find & redact** with plain text or regular expressions (e.g. `\d{3}-\d{2}-\d{4}`). Applying redactions rasterizes the affected pages, so the content is permanently removed rather than just covered. It can also scrub hidden information: document properties, XMP metadata, attachments, scripts and automatic actions |
+| **Scan & OCR** | Recognize text in scanned pages (12 languages; English is built in and works offline). Adds an invisible text layer, so scans become searchable and selectable |
 | **Protect** | AES-256 password encryption with permission controls (printing, copying, editing, commenting, form filling, assembly). Opens password-protected PDFs. Remove security |
 | **Optimize & export** | Lossless optimization (removes unused objects, uses object streams) or strong lossy compression (JPEG rasterization). Export pages as PNG/JPEG. Export text. Print |
-| **Productivity** | Unlimited-session undo/redo (40 steps), keyboard shortcuts, drag & drop files, Save in place (File System Access API in Chromium browsers), unsaved-changes warning |
+| **Productivity** | Undo/redo per document (up to 40 steps, capped at about 400 MB for large files), keyboard shortcuts, drag & drop files, Save in place, unsaved-changes warning |
 
 ## Getting started
 
@@ -39,7 +40,7 @@ The output goes to `dist/`. You can also open a document on launch with `?file=<
 
 ## Desktop app (Windows)
 
-PDF Pro is also packaged as a desktop app with [Electron](https://www.electronjs.org). Compared with the browser version, it adds:
+Inkstone is also packaged as a desktop app with [Electron](https://www.electronjs.org). Compared with the browser version, it adds:
 
 - native Open and Save dialogs
 - Save that writes back to the file you opened
@@ -51,7 +52,7 @@ PDF Pro is also packaged as a desktop app with [Electron](https://www.electronjs
 | --- | --- |
 | `npm run desktop` | Build the web app and run it in Electron |
 | `npm run desktop:dev` | Run in Electron against the Vite dev server, with live reload |
-| `npm run dist` | Build `release/PDF-Pro-Setup-<version>.exe` (installer) and `release/PDF-Pro-Portable-<version>.exe` (no install needed) |
+| `npm run dist` | Build `release/Inkstone-Setup-<version>.exe` (installer) and `release/Inkstone-Portable-<version>.exe` (no install needed) |
 | `npm run dist:dir` | Build an unpacked app in `release/win-unpacked/` for quick testing |
 | `npm run icon` | Regenerate `build/icon.png` |
 
@@ -64,6 +65,7 @@ In the desktop app, the page is served from a private `app://` scheme in a sandb
 | Keys | Action |
 | --- | --- |
 | Ctrl+O / Ctrl+S / Ctrl+Shift+S / Ctrl+P | Open / Save / Save as / Print |
+| Ctrl+W / Ctrl+Tab (Shift for back) | Close tab / switch tabs |
 | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | Undo / Redo |
 | Ctrl+F, Enter / Shift+Enter | Find, next / previous match |
 | Ctrl+H / Ctrl+U | Highlight / underline the selected text |
@@ -77,31 +79,33 @@ In the desktop app, the page is served from a private `app://` scheme in a sandb
 
 - **Rendering:** [pdf.js](https://github.com/mozilla/pdf.js) draws the pages, the text layer, links and outlines.
 - **Editing:** [@cantoo/pdf-lib](https://github.com/cantoo-scribe/pdf-lib) is a maintained pdf-lib fork that adds encryption and decryption. Every operation in [src/lib/engine.js](src/lib/engine.js) takes PDF bytes in and returns new bytes, which keeps undo simple: it is a stack of snapshots.
-- **Annotations** live on an SVG overlay in page coordinates and stay editable for the whole session. When you save, print or export, they are drawn into the PDF ("flattened"). Sticky notes are written as standard PDF comment annotations instead.
-- **OCR:** [Tesseract.js](https://github.com/naptha/tesseract.js) runs in a Web Worker.
+- **Annotations** live on an SVG overlay in page coordinates. When you save, they are drawn into each page so every reader shows them. Inkstone also stores the editable objects in the page (`/InkstoneMarkup`), along with the content streams that hold the drawing (`/InkstoneStreams`). On open, it removes those streams and restores the objects. If another program has since rewritten the page, the drawing is left as it is. Sticky notes are also written as standard PDF comments. Print and export always flatten.
+- **OCR:** [Tesseract.js](https://github.com/naptha/tesseract.js) runs in a Web Worker. The engine and English data are copied into the app at build time (see `vite.config.js`), so English works offline.
 - **Icons:** [Lucide](https://lucide.dev) (ISC license).
 
 ```
 src/
-  main.js          app shell: state, history, open/save, commands, shortcuts
+  main.js          app shell: tabs, state, history, open/save, bookmarks, commands, shortcuts
   viewer.js        page viewer (lazy rendering, text layer, search, links)
   thumbnails.js    page sidebar with multi-select and drag reorder
   annotations.js   annotation model and interactive editing
-  tools.js         dialog-driven tools (merge, split, watermark, OCR, redaction, ...)
+  tools.js         dialog-driven tools (merge, split, watermark, OCR, redaction, compare, fields, links, ...)
   lib/engine.js    PDF manipulation (pure bytes -> bytes)
   lib/pdfjs.js     pdf.js setup and rendering helpers
   lib/ui.js        DOM, dialogs, toasts, file IO
 electron/
   main.mjs         desktop shell: app:// protocol, dialogs, file association
-  preload.cjs      minimal bridge exposed to the page as window.pdfProDesktop
+  preload.cjs      minimal bridge exposed to the page as window.inkstoneDesktop
 ```
 
 ## Known limitations
 
 - **Edit Text** covers the original run with white-out and places new text on top, in Helvetica. The original glyphs are still in the file underneath. To remove content for real, use redaction.
-- When you save, annotations are flattened into the page, so after reopening they can't be edited as objects. Sticky notes stay real comments.
+- Markup made in other programs (for example, highlights from another PDF editor) is shown and listed in Comments, but it can't be edited as objects.
+- Compare checks text only, page by page. It doesn't detect formatting or image changes, or text that moved to a different page.
 - Applying redactions and strong compression turn the affected pages into images. Run OCR afterwards to make them searchable again.
-- Not implemented yet: digital (certificate) signatures, document comparison, PDF/A conversion, and export to Office formats.
+- OCR in languages other than English downloads that language's data the first time.
+- Not implemented yet: digital (certificate) signatures, PDF/A conversion, and export to Office formats.
 
 ## License
 

@@ -7,7 +7,7 @@ import {
 } from '@cantoo/pdf-lib';
 import { hexToRgb01 } from './ui.js';
 
-export const APP_NAME = 'PDF Pro';
+export const APP_NAME = 'Inkstone';
 
 // ---------- loading / saving ----------
 
@@ -232,18 +232,86 @@ function addNoteAnnotation(doc, page, g, a) {
     Subtype: 'Text',
     Rect: [x, y - 20, x + 20, y],
     Contents: PDFHexString.fromText(a.text || ''),
-    T: PDFHexString.fromText(a.author || 'PDF Pro'),
+    T: PDFHexString.fromText(a.author || 'Inkstone'),
     M: PDFString.fromDate(new Date()),
     Name: 'Comment',
     C: [r, gg, b],
     F: 4,
     Open: false,
+    InkstoneNote: true,
   });
   page.node.addAnnot(doc.context.register(annot));
 }
 
 export async function applyAnnotations(bytes, annots) {
   return edit(bytes, (doc) => drawAnnotations(doc, annots));
+}
+
+// ---------- editable markup round-trip ----------
+// On save, markup is drawn into each page (so every PDF reader shows it) and the
+// editable objects are stored alongside, together with the content streams that
+// hold the drawing. On open, those streams are removed and the objects restored.
+
+const MARKUP_KEY = PDFName.of('InkstoneMarkup');
+const STREAMS_KEY = PDFName.of('InkstoneStreams');
+const CONTENTS = PDFName.of('Contents');
+
+function contentRefs(page) {
+  const c = page.node.get(CONTENTS);
+  if (c instanceof PDFRef) return [c];
+  if (c instanceof PDFArray) return c.asArray().filter((x) => x instanceof PDFRef);
+  return [];
+}
+
+export async function saveEditableAnnotations(bytes, annots) {
+  const list = annots.filter((a) => a.type !== 'redact');
+  const doc = await load(bytes);
+  const pages = doc.getPages();
+  const byPage = new Map();
+  for (const a of list) if (pages[a.page]) byPage.set(a.page, [...(byPage.get(a.page) || []), a]);
+  const before = new Map([...byPage.keys()].map((i) => [i, new Set(contentRefs(pages[i]).map((r) => r.tag))]));
+  await drawAnnotations(doc, list);
+  await doc.flush();
+  for (const [i, items] of byPage) {
+    const page = pages[i];
+    const added = contentRefs(page).filter((r) => !before.get(i).has(r.tag));
+    page.node.set(STREAMS_KEY, doc.context.obj(added));
+    page.node.set(MARKUP_KEY, PDFHexString.fromText(JSON.stringify(items.map(({ page: _p, ...rest }) => rest))));
+  }
+  return finalize(doc);
+}
+
+/** Returns {bytes, annots}: bytes with Inkstone's drawn markup removed, and the editable objects. */
+export async function extractEditableAnnotations(bytes) {
+  const doc = await load(bytes);
+  const annots = [];
+  let changed = false;
+  doc.getPages().forEach((page, i) => {
+    const raw = page.node.get(MARKUP_KEY);
+    if (!raw) return;
+    changed = true;
+    const streams = page.node.lookupMaybe(STREAMS_KEY, PDFArray)?.asArray().filter((x) => x instanceof PDFRef) || [];
+    page.node.delete(MARKUP_KEY);
+    page.node.delete(STREAMS_KEY);
+    const contents = page.node.get(CONTENTS);
+    const tags = new Set(contentRefs(page).map((r) => r.tag));
+    // If another program rewrote the page, the drawing can't be separated safely: keep it flattened.
+    if (!(contents instanceof PDFArray) || !streams.every((r) => tags.has(r.tag))) return;
+    let items;
+    try { items = JSON.parse(raw.decodeText()); } catch { return; }
+    const drop = new Set(streams.map((r) => r.tag));
+    page.node.set(CONTENTS, doc.context.obj(contents.asArray().filter((x) => !(x instanceof PDFRef && drop.has(x.tag)))));
+    // Sticky notes are restored from the saved objects, so drop the comment annotations written for them.
+    const arr = page.node.Annots();
+    if (arr) {
+      for (let j = arr.size() - 1; j >= 0; j--) {
+        if (arr.lookupMaybe(j, PDFDict)?.get(PDFName.of('InkstoneNote'))) arr.remove(j);
+      }
+    }
+    for (const a of items) annots.push({ ...a, page: i });
+  });
+  if (!changed) return { bytes, annots };
+  return { bytes: await finalize(doc), annots };
 }
 
 // ---------- page organization ----------
@@ -460,7 +528,7 @@ export async function getFormFields(bytes) {
   const doc = await load(bytes);
   return doc.getForm().getFields().map((f) => {
     const type = fieldType(f);
-    const out = { name: f.getName(), type, readOnly: f.isReadOnly() };
+    const out = { name: f.getName(), type, readOnly: f.isReadOnly(), required: f.isRequired() };
     try {
       if (type === 'text') Object.assign(out, { value: f.getText() || '', multiline: f.isMultiline() });
       else if (type === 'checkbox') out.value = f.isChecked();
@@ -487,20 +555,135 @@ export const setFormFields = (bytes, values) =>
 
 export const flattenForm = (bytes) => edit(bytes, (doc) => doc.getForm().flatten());
 
-export const addFormField = (bytes, pageIndex, type, name, rect) =>
+/**
+ * type: text | checkbox | dropdown | radio. extra: {options: string[]} for dropdowns,
+ * {value} for a radio button (buttons sharing a name form one group).
+ */
+export const addFormField = (bytes, pageIndex, type, name, rect, extra = {}) =>
   edit(bytes, (doc) => {
     const form = doc.getForm();
-    if (form.getFieldMaybe(name)) throw new Error(`A field named "${name}" already exists.`);
+    const existing = form.getFieldMaybe(name);
+    if (existing && !(type === 'radio' && existing instanceof PDFRadioGroup)) throw new Error(`A field named "${name}" already exists.`);
     const page = doc.getPage(pageIndex);
     const g = pageGeom(page);
     const r = visualRectToPdf(g, rect.x, rect.y, rect.w, rect.h);
     const opts = { ...r, borderColor: rgb(0.3, 0.4, 0.7), borderWidth: 1, backgroundColor: rgb(0.93, 0.95, 1), rotate: degrees(g.r) };
     if (type === 'checkbox') form.createCheckBox(name).addToPage(page, opts);
-    else {
+    else if (type === 'dropdown') {
+      const dd = form.createDropdown(name);
+      dd.addOptions(extra.options?.length ? extra.options : ['Option 1']);
+      dd.addToPage(page, opts);
+    } else if (type === 'radio') {
+      const group = existing || form.createRadioGroup(name);
+      const value = extra.value || `Choice ${group.getOptions().length + 1}`;
+      if (group.getOptions().includes(value)) throw new Error(`Group "${name}" already has a choice "${value}".`);
+      group.addOptionToPage(value, page, opts);
+    } else {
       const tf = form.createTextField(name);
       if (rect.h > 40) tf.enableMultiline();
       tf.addToPage(page, opts);
     }
+  });
+
+/** changes: {[name]: {required, readOnly, remove, options, rename}} */
+export const updateFormFields = (bytes, changes) =>
+  edit(bytes, (doc) => {
+    const form = doc.getForm();
+    for (const [name, c] of Object.entries(changes)) {
+      const f = form.getFieldMaybe(name);
+      if (!f) continue;
+      if (c.remove) { form.removeField(f); continue; }
+      if (c.required != null) c.required ? f.enableRequired() : f.disableRequired();
+      if (c.readOnly != null) c.readOnly ? f.enableReadOnly() : f.disableReadOnly();
+      if (c.options && (f instanceof PDFDropdown || f instanceof PDFOptionList)) f.setOptions(c.options);
+      if (c.rename && c.rename !== name) {
+        if (form.getFieldMaybe(c.rename)) throw new Error(`A field named "${c.rename}" already exists.`);
+        f.acroField.setPartialName(c.rename);
+      }
+    }
+  });
+
+// ---------- hidden data ----------
+
+/**
+ * Remove information a reader doesn't see on the page: document properties, XMP
+ * metadata, embedded files, scripts and automatic actions.
+ */
+export const scrubHiddenData = (bytes) =>
+  edit(bytes, (doc) => {
+    const cat = doc.catalog;
+    for (const k of ['Metadata', 'OpenAction', 'AA', 'PieceInfo', 'SpiderInfo', 'Threads', 'Collection']) cat.delete(PDFName.of(k));
+    const names = cat.lookupMaybe(PDFName.of('Names'), PDFDict);
+    if (names) for (const k of ['EmbeddedFiles', 'JavaScript']) names.delete(PDFName.of(k));
+    doc.context.trailerInfo.Info = doc.context.register(doc.context.obj({}));
+    for (const page of doc.getPages()) {
+      for (const k of ['AA', 'PieceInfo', 'Metadata']) page.node.delete(PDFName.of(k));
+      const arr = page.node.Annots();
+      if (!arr) continue;
+      for (let j = arr.size() - 1; j >= 0; j--) {
+        const a = arr.lookupMaybe(j, PDFDict);
+        const sub = a?.get(PDFName.of('Subtype'))?.toString();
+        if (sub === '/FileAttachment' || sub === '/Sound' || sub === '/Movie') arr.remove(j);
+        else if (a) { a.delete(PDFName.of('AA')); if (a.lookupMaybe(PDFName.of('A'), PDFDict)?.get(PDFName.of('S'))?.toString() === '/JavaScript') a.delete(PDFName.of('A')); }
+      }
+    }
+  });
+
+// ---------- links ----------
+
+/** target: {url} or {page} (0-based). */
+export const addLink = (bytes, pageIndex, rect, target) =>
+  edit(bytes, (doc) => {
+    const page = doc.getPage(pageIndex);
+    const r = visualRectToPdf(pageGeom(page), rect.x, rect.y, rect.w, rect.h);
+    const dict = { Type: 'Annot', Subtype: 'Link', Rect: [r.x, r.y, r.x + r.width, r.y + r.height], Border: [0, 0, 0], F: 4 };
+    if (target.url) dict.A = doc.context.obj({ S: 'URI', URI: PDFString.of(target.url) });
+    else dict.Dest = doc.context.obj([doc.getPage(target.page).ref, 'Fit']);
+    page.node.addAnnot(doc.context.register(doc.context.obj(dict)));
+  });
+
+/** Remove every link annotation on the given pages. */
+export const removeLinks = (bytes, indices) =>
+  edit(bytes, (doc) => {
+    for (const i of indices) {
+      const arr = doc.getPage(i).node.Annots();
+      if (!arr) continue;
+      for (let j = arr.size() - 1; j >= 0; j--) {
+        if (arr.lookupMaybe(j, PDFDict)?.get(PDFName.of('Subtype'))?.toString() === '/Link') arr.remove(j);
+      }
+    }
+  });
+
+// ---------- bookmarks ----------
+
+/** Replace the document outline. tree: [{title, page?, url?, children?}] */
+export const setOutline = (bytes, tree) =>
+  edit(bytes, (doc) => {
+    const ctx = doc.context;
+    const pageRefs = doc.getPages().map((p) => p.ref);
+    const outlinesKey = PDFName.of('Outlines');
+    if (!tree.length) { doc.catalog.delete(outlinesKey); return; }
+    const count = (items) => items.reduce((n, it) => n + 1 + count(it.children || []), 0);
+    const build = (items, parentRef) => {
+      const refs = items.map(() => ctx.nextRef());
+      items.forEach((it, i) => {
+        const dict = { Title: PDFHexString.fromText(it.title || 'Untitled'), Parent: parentRef };
+        if (i > 0) dict.Prev = refs[i - 1];
+        if (i < refs.length - 1) dict.Next = refs[i + 1];
+        if (it.url) dict.A = ctx.obj({ S: 'URI', URI: PDFString.of(it.url) });
+        else if (pageRefs[it.page]) dict.Dest = ctx.obj([pageRefs[it.page], 'Fit']);
+        if (it.children?.length) {
+          const [first, last] = build(it.children, refs[i]);
+          Object.assign(dict, { First: first, Last: last, Count: count(it.children) });
+        }
+        ctx.assign(refs[i], ctx.obj(dict));
+      });
+      return [refs[0], refs[refs.length - 1]];
+    };
+    const rootRef = ctx.nextRef();
+    const [first, last] = build(tree, rootRef);
+    ctx.assign(rootRef, ctx.obj({ Type: 'Outlines', First: first, Last: last, Count: count(tree) }));
+    doc.catalog.set(outlinesKey, rootRef);
   });
 
 // ---------- metadata & security ----------

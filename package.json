@@ -1,7 +1,7 @@
 {
-  "name": "pdf-pro",
+  "name": "inkstone",
   "version": "1.0.0",
-  "description": "PDF Pro - a free, open source PDF editor (view, annotate, sign, fill forms, organize pages, OCR, protect)",
+  "description": "Inkstone - a free, open source PDF editor: view, annotate, sign, fill forms, organize pages, OCR, protect",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -19,11 +19,12 @@
     "ocr",
     "forms"
   ],
-  "author": "PDF Pro contributors",
+  "author": "Inkstone contributors",
   "license": "MIT",
   "type": "module",
   "devDependencies": {
     "@cantoo/pdf-lib": "^2.11.1",
+    "@tesseract.js-data/eng": "^1.0.0",
     "electron": "^38.8.6",
     "electron-builder": "^26.18.0",
     "jszip": "^3.10.2",
@@ -34,9 +35,9 @@
   },
   "main": "electron/main.mjs",
   "build": {
-    "appId": "org.pdfpro.app",
-    "productName": "PDF Pro",
-    "copyright": "Copyright © 2026 PDF Pro contributors",
+    "appId": "org.inkstone.app",
+    "productName": "Inkstone",
+    "copyright": "Copyright © 2026 Inkstone contributors",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -60,10 +61,10 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "artifactName": "PDF-Pro-Setup-${version}.${ext}"
+      "artifactName": "Inkstone-Setup-${version}.${ext}"
     },
     "portable": {
-      "artifactName": "PDF-Pro-Portable-${version}.${ext}"
+      "artifactName": "Inkstone-Portable-${version}.${ext}"
     },
     "fileAssociations": [
       {
