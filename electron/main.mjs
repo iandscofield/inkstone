@@ -125,6 +125,43 @@ ipcMain.handle('renderer-ready', async () => {
   return loadFiles(paths);
 });
 
+// ---------- recent files ----------
+// Only files the user opened or saved (writablePaths) can be added, and only listed
+// entries can be reopened, so the page can't use this to read arbitrary files.
+
+const recentFile = () => join(app.getPath('userData'), 'recent.json');
+const RECENT_MAX = 30;
+
+async function readRecent() {
+  try { return JSON.parse(await readFile(recentFile(), 'utf8')); } catch { return []; }
+}
+async function writeRecent(list) {
+  const pinned = list.filter((r) => r.pinned);
+  const rest = list.filter((r) => !r.pinned).slice(0, Math.max(0, RECENT_MAX - pinned.length));
+  await writeFile(recentFile(), JSON.stringify([...pinned, ...rest]));
+}
+
+ipcMain.handle('recent-list', async () => (await readRecent()).map((r) => ({ ...r, missing: !existsSync(r.path), folder: dirname(r.path) })));
+ipcMain.handle('recent-add', async (_e, { path, pages, thumb }) => {
+  const p = resolve(String(path));
+  if (!writablePaths.has(p)) return false;
+  const list = await readRecent();
+  const prev = list.find((r) => r.path === p);
+  const entry = { path: p, name: basename(p), pages: pages || prev?.pages || 0, thumb: thumb || prev?.thumb || null, opened: Date.now(), pinned: !!prev?.pinned };
+  await writeRecent([entry, ...list.filter((r) => r.path !== p)]);
+  return true;
+});
+ipcMain.handle('recent-remove', async (_e, path) => { await writeRecent((await readRecent()).filter((r) => r.path !== path)); });
+ipcMain.handle('recent-pin', async (_e, path, pinned) => {
+  await writeRecent((await readRecent()).map((r) => (r.path === path ? { ...r, pinned: !!pinned } : r)));
+});
+ipcMain.handle('recent-clear', async () => { await writeRecent((await readRecent()).filter((r) => r.pinned)); });
+ipcMain.handle('recent-open', async (_e, path) => {
+  const entry = (await readRecent()).find((r) => r.path === path);
+  if (!entry || !existsSync(entry.path)) return [];
+  return loadFiles([entry.path]);
+});
+
 ipcMain.handle('open-dialog', async () => {
   const r = await dialog.showOpenDialog(win, {
     properties: ['openFile', 'multiSelections'],

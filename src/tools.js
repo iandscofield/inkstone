@@ -503,6 +503,158 @@ function lineAt(p, items, vx, vy) {
 }
 
 /**
+ * Every text line on the page along direction `dir`, in "along/across" coordinates
+ * (along = reading direction, across = perpendicular, larger is higher on the page).
+ */
+function pageLines(items, dir, hBase) {
+  const [ux, uy] = dir;
+  const pts = items.filter((it) => {
+    const g = itemGeo(it);
+    return g.ux * ux + g.uy * uy > 0.98;
+  }).map((it) => {
+    const g = itemGeo(it);
+    return { it, along: g.x * ux + g.y * uy, across: -g.x * uy + g.y * ux, w: g.w, h: g.h };
+  }).sort((a, b) => b.across - a.across || a.along - b.along);
+  const lines = [];
+  for (const t of pts) {
+    const line = lines.find((l) => Math.abs(l.across - t.across) < 0.35 * Math.max(l.h, t.h)
+      && t.along - l.alongEnd < 1.5 * Math.max(l.h, hBase) && l.alongStart - (t.along + t.w) < 1.5 * Math.max(l.h, hBase));
+    if (line) {
+      line.parts.push(t);
+      line.alongStart = Math.min(line.alongStart, t.along);
+      line.alongEnd = Math.max(line.alongEnd, t.along + t.w);
+      line.h = Math.max(line.h, t.h);
+    } else lines.push({ parts: [t], across: t.across, alongStart: t.along, alongEnd: t.along + t.w, h: t.h });
+  }
+  for (const l of lines) {
+    l.parts.sort((a, b) => a.along - b.along);
+    let text = '';
+    l.parts.forEach((t, k) => {
+      const prev = l.parts[k - 1];
+      if (prev && t.along - (prev.along + prev.w) > 0.2 * t.h && !text.endsWith(' ') && !t.it.str.startsWith(' ')) text += ' ';
+      text += t.it.str;
+    });
+    l.text = text.trim();
+    const g = itemGeo(l.parts[0].it);
+    l.spec = { origin: [g.x, g.y], dir, height: l.h, length: l.alongEnd - l.alongStart };
+  }
+  return lines.sort((a, b) => b.across - a.across);
+}
+
+/**
+ * Grow a paragraph around the clicked line: lines with the same size, a steady line
+ * spacing and the same left edge (the first line may be indented).
+ */
+function paragraphAt(items, found) {
+  const dir = found.line.dir;
+  const lines = pageLines(items, dir, found.line.height);
+  const [ux, uy] = dir;
+  const o = found.line.origin;
+  const clickAcross = -o[0] * uy + o[1] * ux, clickAlong = o[0] * ux + o[1] * uy;
+  const start = lines.find((l) => Math.abs(l.across - clickAcross) < 0.35 * l.h && clickAlong >= l.alongStart - 1 && clickAlong <= l.alongEnd + 1);
+  if (!start) return null;
+  const h0 = start.h;
+  const sameSize = (l) => Math.abs(l.h - h0) < 0.15 * h0;
+  const overlaps = (a, b) => Math.min(a.alongEnd, b.alongEnd) - Math.max(a.alongStart, b.alongStart) > 0.3 * Math.min(a.alongEnd - a.alongStart, b.alongEnd - b.alongStart);
+  const block = [start];
+  let spacing = null, left = start.alongStart;
+  // Downwards.
+  for (let cur = start; ;) {
+    const next = lines.filter((l) => l.across < cur.across - 0.5 * h0 && overlaps(l, cur)).sort((a, b) => b.across - a.across)[0];
+    if (!next || !sameSize(next)) break;
+    const gap = cur.across - next.across;
+    if (gap < 0.9 * h0 || gap > 2.0 * h0 || (spacing && Math.abs(gap - spacing) > 0.2 * spacing)) break;
+    if (Math.abs(next.alongStart - left) > 1.0 * h0) {
+      // An indented line can only be the first line, which we've already passed going down.
+      if (next.alongStart > left) break;
+      if (block.length === 1 && cur.alongStart - next.alongStart < 4 * h0) left = next.alongStart; // clicked line was an indented first line
+      else break;
+    }
+    spacing = spacing ?? gap;
+    block.push(next);
+    cur = next;
+  }
+  // Upwards (an indented line above is a first line: include it and stop).
+  for (let cur = start; ;) {
+    const prev = lines.filter((l) => l.across > cur.across + 0.5 * h0 && overlaps(l, cur)).sort((a, b) => a.across - b.across)[0];
+    if (!prev || !sameSize(prev)) break;
+    const gap = prev.across - cur.across;
+    if (gap < 0.9 * h0 || gap > 2.0 * h0 || (spacing && Math.abs(gap - spacing) > 0.2 * spacing)) break;
+    if (prev.alongStart < left - 1.0 * h0) break;
+    spacing = spacing ?? gap;
+    block.unshift(prev);
+    if (prev.alongStart > left + 1.0 * h0) break;
+    cur = prev;
+  }
+  if (block.length < 2) return null;
+  left = Math.min(...block.slice(1).map((l) => l.alongStart));
+  const first = block[0];
+  let text = '';
+  for (const l of block) {
+    if (!text) text = l.text;
+    else if (/[A-Za-z]-$/.test(text) && /^[a-z]/.test(l.text)) text = text.slice(0, -1) + l.text;
+    else text += ` ${l.text}`;
+  }
+  // Alignment from where lines start and end (the last line is usually short).
+  const starts = block.slice(1).map((l) => l.alongStart);
+  const ends = block.slice(0, -1).map((l) => l.alongEnd);
+  const spread = (a) => (a.length ? Math.max(...a) - Math.min(...a) : 0);
+  const centers = block.map((l) => (l.alongStart + l.alongEnd) / 2);
+  const align = spread(starts) < 0.6 * h0 && spread(ends) < 0.6 * h0 && block.length >= 3 ? 'justify'
+    : spread(starts) < 0.6 * h0 ? 'left' : spread(ends) < 0.6 * h0 ? 'right' : spread(centers) < 0.6 * h0 ? 'center' : 'left';
+  const right = Math.max(...block.map((l) => l.alongEnd));
+  const across0 = first.across;
+  return {
+    text, align, lineCount: block.length,
+    block: {
+      lines: block.map((l) => l.spec),
+      origin: [left * ux - across0 * uy, left * uy + across0 * ux],
+      dir, width: right - left, indent: Math.max(0, first.alongStart - left),
+      lineSpacing: spacing || h0 * 1.2,
+    },
+  };
+}
+
+async function editParagraph(app, p, para, probe, style) {
+  const size = Math.round(probe.size * 2) / 2;
+  const count = h('span', { className: 'muted small' });
+  const textarea = h('textarea', { name: 'text', rows: Math.min(12, Math.max(4, para.lineCount + 1)), style: { width: '100%', fontSize: '14px', lineHeight: '1.5' } }, para.text);
+  const form = h('div', { style: { width: 'min(640px, 86vw)' } },
+    textarea,
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', margin: '4px 2px 10px' } }, count, h('span', { className: 'muted small' }, 'Press Enter for a new paragraph')),
+    h('div', { className: 'form-grid' },
+      h('label', {}, 'Font'), h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+        h('select', { name: 'family' }, [['sans', 'Sans-serif (Helvetica)'], ['serif', 'Serif (Times)'], ['mono', 'Monospace (Courier)']].map(([v, l]) => h('option', { value: v, selected: v === style.family }, l))),
+        h('label', {}, h('input', { type: 'checkbox', name: 'bold', checked: style.bold }), ' Bold'),
+        h('label', {}, h('input', { type: 'checkbox', name: 'italic', checked: style.italic }), ' Italic')),
+      h('label', {}, 'Size'), h('div', { style: { display: 'flex', gap: '12px', alignItems: 'center' } },
+        h('input', { type: 'number', name: 'size', value: size, min: 2, max: 200, step: 0.5, style: { width: '80px' } }),
+        h('label', {}, 'Line spacing ', h('input', { type: 'number', name: 'lineSpacing', value: Math.round(para.block.lineSpacing * 10) / 10, min: 1, max: 400, step: 0.5, style: { width: '80px' } }))),
+      h('label', {}, 'Align'), h('select', { name: 'align' }, [['left', 'Left'], ['justify', 'Justified'], ['center', 'Centered'], ['right', 'Right']].map(([v, l]) => h('option', { value: v, selected: v === para.align }, l))),
+      h('label', {}, 'Color'), h('input', { type: 'color', name: 'color', value: probe.color }),
+      h('p', { className: 'full muted small' }, `Editing a ${para.lineCount}-line paragraph. The original text is removed and your edit is re-wrapped to the same width.`)));
+  const update = async () => {
+    const v = formValues(form);
+    const n = await E.measureParagraph(v.text, { family: v.family, bold: v.bold, italic: v.italic, size: v.size || size, width: para.block.width, indent: para.block.indent });
+    count.textContent = n > para.lineCount ? `${n} lines (was ${para.lineCount}) — will extend below the original and may overlap what follows`
+      : `${n} line${n === 1 ? '' : 's'} (was ${para.lineCount})`;
+    count.style.color = n > para.lineCount ? 'var(--accent-text)' : '';
+  };
+  form.addEventListener('input', () => { clearTimeout(update.t); update.t = setTimeout(update, 150); });
+  update();
+  const { value } = await dialog({
+    title: 'Edit paragraph', body: form,
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Edit one line only', value: 'line' }, { label: 'Replace paragraph', value: 'ok', primary: true }],
+  });
+  if (value !== 'ok') return value;
+  const v = formValues(form);
+  await app.runOp('Editing paragraph', (b) => E.replaceTextBlock(b, p.index, para.block, {
+    text: v.text.replace(/\r/g, ''), family: v.family, bold: v.bold, italic: v.italic, size: v.size || size, color: v.color, align: v.align, lineSpacing: v.lineSpacing,
+  }));
+  return 'done';
+}
+
+/**
  * Edit Text: click a line, change it, and the original text is removed from the page
  * and replaced (matching size, color and the closest standard font). Falls back to
  * covering the text when it lives somewhere Inkstone can't rewrite.
@@ -522,6 +674,11 @@ export async function editText(app, e) {
   }
   const style = E.styleFromFontName(probe.fontName || tc.styles[found.fontKey]?.fontFamily || '');
   if (!probe.fontName && /serif/i.test(tc.styles[found.fontKey]?.fontFamily || '') && !/sans/i.test(tc.styles[found.fontKey]?.fontFamily)) style.family = 'serif';
+  const para = paragraphAt(items, found);
+  if (para) {
+    const r = await editParagraph(app, p, para, probe, style);
+    if (r !== 'line') return;
+  }
   const size = Math.round(probe.size * 2) / 2;
   const body = h('div', { style: { width: 'min(560px, 84vw)' } },
     h('input', { type: 'text', name: 'text', value: found.text, style: { width: '100%', fontSize: '15px' } }),

@@ -919,6 +919,101 @@ export const replaceTextLine = (bytes, pageIndex, line, repl) =>
     }
   });
 
+// ---------- paragraph editing (reflow) ----------
+
+const metricFonts = new Map();
+/** Standard-font metrics without touching the real document (for wrapping and previews). */
+async function metricsFont(family, bold, italic) {
+  const key = `${family}-${bold}-${italic}`;
+  if (!metricFonts.has(key)) {
+    const doc = await PDFDocument.create();
+    metricFonts.set(key, doc.embedFont((STD[family] || STD.sans)[(bold ? 1 : 0) + (italic ? 2 : 0)]));
+  }
+  return metricFonts.get(key);
+}
+
+/**
+ * Break text into lines that fit `width`. Blank-line-free newlines start a new paragraph
+ * (hard break). The first line of each paragraph is shortened by `indent`.
+ * Returns [{words, width, last}] where `last` marks a paragraph's final line.
+ */
+function wrapText(font, size, text, width, indent = 0) {
+  const lines = [];
+  const space = font.widthOfTextAtSize(' ', size);
+  for (const para of safeText(font, text).split('\n')) {
+    const words = para.split(/\s+/).filter(Boolean);
+    let cur = [], curW = 0, first = true;
+    const avail = () => width - (first ? indent : 0);
+    for (const w of words) {
+      const ww = font.widthOfTextAtSize(w, size);
+      if (cur.length && curW + space + ww > avail()) {
+        lines.push({ words: cur, width: curW, last: false, first });
+        cur = []; curW = 0; first = false;
+      }
+      curW += (cur.length ? space : 0) + ww;
+      cur.push(w);
+    }
+    lines.push({ words: cur, width: curW, last: true, first });
+  }
+  return lines;
+}
+
+/** How many lines `text` takes at this size and width (for the editor's live preview). */
+export async function measureParagraph(text, { family, bold, italic, size, width, indent = 0 }) {
+  const font = await metricsFont(family, bold, italic);
+  return wrapText(font, size, text, width, indent).length;
+}
+
+/**
+ * Replace a whole paragraph: remove the text on every original line and draw `repl`
+ * re-wrapped to the paragraph's width.
+ * block: {lines: [line…], origin:[x,y] (left edge, first baseline), dir:[ux,uy], width, lineSpacing, indent}
+ * repl: {text, family, bold, italic, size, color, align:'left'|'right'|'center'|'justify', lineSpacing}
+ */
+export const replaceTextBlock = (bytes, pageIndex, block, repl) =>
+  edit(bytes, async (doc) => {
+    const page = doc.getPage(pageIndex);
+    const src = pageContentString(doc, page);
+    const all = findTextOps(src, fontInfoFor(page));
+    const ops = [...new Map(block.lines.flatMap((l) => opsOnLine(all, l)).map((o) => [o.s, o])).values()];
+    if (!ops.length) throw Object.assign(new Error('The original text could not be located in the page content.'), { code: 'NOT_FOUND' });
+    let out = src;
+    for (const op of ops.sort((a, b) => b.s - a.s)) out = `${out.slice(0, op.s)}${op.replace ? ` ${op.replace} ` : ' '}${out.slice(op.e)}`;
+    const bytesOut = new Uint8Array(out.length);
+    for (let i = 0; i < out.length; i++) bytesOut[i] = out.charCodeAt(i) & 255;
+    page.node.set(CONTENTS, doc.context.register(doc.context.flateStream(bytesOut)));
+    if (!repl.text?.trim()) return;
+
+    const font = await doc.embedFont((STD[repl.family] || STD.sans)[(repl.bold ? 1 : 0) + (repl.italic ? 2 : 0)]);
+    const size = repl.size;
+    const lines = wrapText(font, size, repl.text, block.width, block.indent || 0);
+    const [ux, uy] = block.dir;
+    const angle = (Math.atan2(uy, ux) * 180) / Math.PI;
+    const spacing = repl.lineSpacing || block.lineSpacing || size * 1.2;
+    const space = font.widthOfTextAtSize(' ', size);
+    const at = (along, down) => [block.origin[0] + ux * along + uy * down, block.origin[1] + uy * along - ux * down];
+    const opts = { size, font, color: color(repl.color), rotate: degrees(angle) };
+    lines.forEach((ln, i) => {
+      const down = i * spacing;
+      const indent = ln.first ? block.indent || 0 : 0;
+      const room = block.width - indent;
+      if (repl.align === 'justify' && !ln.last && ln.words.length > 1) {
+        // Spread the leftover space between words.
+        const gap = space + (room - ln.width) / (ln.words.length - 1);
+        let along = indent;
+        for (const w of ln.words) {
+          const [x, y] = at(along, down);
+          page.drawText(w, { ...opts, x, y });
+          along += font.widthOfTextAtSize(w, size) + gap;
+        }
+        return;
+      }
+      const offset = repl.align === 'right' ? room - ln.width : repl.align === 'center' ? (room - ln.width) / 2 : 0;
+      const [x, y] = at(indent + offset, down);
+      page.drawText(ln.words.join(' '), { ...opts, x, y });
+    });
+  });
+
 // ---------- certificate signature appearance ----------
 
 /**

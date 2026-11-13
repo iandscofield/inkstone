@@ -155,16 +155,31 @@
           <button class="icon sm" data-cmd="zoomIn" title="Zoom in (Ctrl+=)" data-needs-doc><i data-lucide="plus"></i></button>
         </div>
 
-        <div id="dropHint" class="drop-hint">
-          <div class="welcome">
-            <div class="welcome-icon"><i data-lucide="file-text"></i></div>
-            <h1>Open a document to get started</h1>
-            <p>Edit, sign, organize, protect and OCR PDFs. Everything runs on your computer — your files are never uploaded.</p>
-            <div class="welcome-actions">
-              <button class="primary lg" data-cmd="open"><i data-lucide="folder-open"></i> Open file</button>
-              <button class="lg" data-cmd="newBlank"><i data-lucide="file-plus"></i> Blank PDF</button>
+        <div id="dropHint" class="drop-hint start">
+          <div class="start-wash" aria-hidden="true"></div>
+          <div class="start-inner">
+            <header class="start-hero">
+              <img class="start-mark" src="inkstone-icon.svg" alt="" width="84" height="84" />
+              <div>
+                <p class="start-greeting" id="startGreeting">Welcome</p>
+                <h1>What are we working on?</h1>
+              </div>
+            </header>
+            <div class="start-actions">
+              <button class="start-tile primary-tile" data-cmd="open"><i data-lucide="folder-open"></i><strong>Open</strong><span>PDF or images</span></button>
+              <button class="start-tile" data-cmd="newBlank"><i data-lucide="file-plus"></i><strong>Blank PDF</strong><span>Start from scratch</span></button>
+              <button class="start-tile" data-cmd="combineNew"><i data-lucide="files"></i><strong>Combine PDFs</strong><span>Merge into one</span></button>
+              <button class="start-tile" data-cmd="imagesNew"><i data-lucide="image-plus"></i><strong>Images → PDF</strong><span>Photos and scans</span></button>
+              <button class="start-tile" data-cmd="signNew"><i data-lucide="signature"></i><strong>Fill &amp; sign</strong><span>Open and sign</span></button>
             </div>
-            <p class="muted small">or drop PDF and image files anywhere</p>
+            <section class="start-recent" id="startRecent" hidden>
+              <div class="start-section-head">
+                <h2>Recent</h2>
+                <button class="link-btn" id="clearRecent" title="Remove all unpinned files from this list">Clear list</button>
+              </div>
+              <div id="recentGrid" class="recent-grid"></div>
+            </section>
+            <p class="start-foot">Drop PDFs or images anywhere · Your files never leave this computer</p>
           </div>
         </div>
       </main>
@@ -193,7 +208,8 @@
         </section>
         <section class="card">
           <h3>Review</h3>
-          <button class="item" data-cmd="compare" data-needs-doc><i data-lucide="git-compare"></i>Compare with another version</button>
+          <button class="item" data-cmd="compare" data-needs-doc><i data-lucide="git-compare"></i>Compare text</button>
+          <button class="item" data-cmd="visualCompare" data-needs-doc><i data-lucide="scan-eye"></i>Visual compare</button>
         </section>
         <section class="card">
           <h3>Redact</h3>

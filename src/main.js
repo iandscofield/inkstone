@@ -1,14 +1,16 @@
 import './styles.css';
 import * as E from './lib/engine.js';
 import { openPdf, renderPageToCanvas } from './lib/pdfjs.js';
-import { $, $$, h, toast, setStatus, dialog, prompt, readBytes, saveBytes, baseName, desktopHandle, labelIconButtons } from './lib/ui.js';
+import { $, $$, h, toast, setStatus, dialog, prompt, readBytes, saveBytes, baseName, desktopHandle, labelIconButtons, pickFiles } from './lib/ui.js';
 import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
 import { Annotator, TYPE_LABELS } from './annotations.js';
 import * as tools from './tools.js';
-import { createIcons, Archive, ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, FileType, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Keyboard, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink } from 'lucide';
+import { visualCompare } from './compare.js';
+import { listRecent, addRecent, removeRecent, pinRecent, clearRecent, openRecent, timeAgo } from './recent.js';
+import { createIcons, Archive, ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, FileType, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Keyboard, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanEye, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink, Pin, X } from 'lucide';
 
-const ICONS = { Archive, ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, FileType, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Keyboard, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink };
+const ICONS = { Archive, ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, FileType, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Keyboard, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanEye, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink, Pin, X };
 
 const MAX_HISTORY = 40;
 
@@ -123,10 +125,71 @@ async function reload({ keepPosition = false, keepSelection = false } = {}) {
   thumbs.setDocument(state.pdf, { keepSelection });
   thumbs.setCurrent(viewer.current);
   old?.destroy();
-  $('#dropHint').hidden = !!state.pdf;
+  showStart();
   renderOutline();
   app.onAnnotationsChanged();
   updateUI();
+}
+
+// ---------- start screen & recent files ----------
+
+function showStart() {
+  $('#dropHint').hidden = !!state.pdf;
+  if (!state.pdf) renderStart();
+}
+
+/** Remember the active document, with a small page-one thumbnail, in the recent list. */
+async function recordRecent(handle) {
+  const pdf = state.pdf;
+  let thumb = null;
+  try {
+    const { canvas } = await renderPageToCanvas(pdf, 0, 240 / (await pdf.getPage(1)).getViewport({ scale: 1 }).width);
+    thumb = canvas.toDataURL('image/jpeg', 0.72);
+  } catch { /* thumbnail is optional */ }
+  await addRecent(handle, { pages: pdf?.numPages || 0, thumb });
+}
+
+async function renderStart() {
+  const hour = new Date().getHours();
+  const name = app.author();
+  const who = name && name !== 'Inkstone user' ? `, ${name.split(' ')[0]}` : '';
+  $('#startGreeting').textContent = `${hour < 5 ? 'Working late' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'}${who}`;
+  const items = await listRecent();
+  const section = $('#startRecent');
+  const grid = $('#recentGrid');
+  section.hidden = !items.length;
+  grid.replaceChildren();
+  const pinned = items.filter((r) => r.pinned), rest = items.filter((r) => !r.pinned);
+  const card = (item, i) => {
+    const el = h('div', {
+      className: `recent-card${item.missing ? ' missing' : ''}${item.pinned ? ' pinned' : ''}`,
+      role: 'button', tabIndex: 0, style: { animationDelay: `${Math.min(i, 12) * 0.03}s` },
+      title: item.missing ? `${item.folder || ''}\nThis file was moved or deleted` : item.folder ? `${item.folder}\\${item.name}` : item.name,
+      onclick: (e) => { if (!e.target.closest('.recent-tools')) openRecentItem(item); },
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRecentItem(item); } },
+    },
+    h('div', { className: 'recent-thumb' }, item.thumb ? h('img', { src: item.thumb, alt: '' }) : h('i', { 'data-lucide': 'file-text' })),
+    h('div', { className: 'recent-meta' },
+      h('strong', {}, item.name),
+      h('span', {}, item.missing ? 'File not found' : [timeAgo(item.opened), item.pages ? `${item.pages} page${item.pages === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ')),
+      item.folder ? h('span', {}, item.folder) : null),
+    h('div', { className: 'recent-tools' },
+      h('button', { className: 'pin', title: item.pinned ? 'Unpin' : 'Pin to the top', onclick: async () => { await pinRecent(item, !item.pinned); renderStart(); } }, h('i', { 'data-lucide': 'pin' })),
+      h('button', { title: 'Remove from list', onclick: async () => { await removeRecent(item); renderStart(); } }, h('i', { 'data-lucide': 'x' }))));
+    return el;
+  };
+  if (pinned.length) grid.append(h('div', { className: 'recent-group-label' }, 'Pinned'), ...pinned.map(card));
+  if (pinned.length && rest.length) grid.append(h('div', { className: 'recent-group-label' }, 'Recent'));
+  grid.append(...rest.map((r, i) => card(r, i + pinned.length)));
+  createIcons({ icons: ICONS });
+}
+
+async function openRecentItem(item) {
+  if (item.missing) return toast('That file was moved or deleted. Remove it from the list, or open it from its new location.', 'error', 6000);
+  const res = await openRecent(item);
+  if (!res) return toast(window.inkstoneDesktop ? 'Could not open that file.' : 'Permission to open that file was not granted.', 'error');
+  if (res.desktopList) return openDesktopFiles(res.desktopList);
+  return openFiles(res.files, res.handle);
 }
 
 /**
@@ -246,6 +309,7 @@ async function openFiles(files, handle = null) {
     await reload();
     renderTabs();
     refreshSignatures();
+    if (state.fileHandle) recordRecent(state.fileHandle);
     if (docs[0].security) toast('Document unlocked. It will stay password-protected when saved unless you remove security.');
   } catch (e) {
     console.error(e);
@@ -304,7 +368,7 @@ async function switchTab(i) {
     if (state.view) { viewer.wrap.scrollTop = state.view.top; viewer.wrap.scrollLeft = state.view.left; viewer.updateCurrent(true); }
     thumbs.setDocument(state.pdf);
     thumbs.setCurrent(viewer.current);
-    $('#dropHint').hidden = !!state.pdf;
+    showStart();
     $('#searchInput').value = '';
     $('#searchStatus').textContent = '';
     renderOutline();
@@ -470,6 +534,7 @@ async function save(saveAs = false) {
     if (handle === undefined) return;
     if (handle?.name) state.fileName = handle.name;
     state.fileHandle = handle || null;
+    if (handle) recordRecent(handle);
     state.dirty = false;
     if (state.original && !keepSigned) {
       // The saved file was rewritten, so its old signatures no longer apply.
@@ -739,6 +804,19 @@ const sel = () => thumbs.targets(viewer.current);
 
 const commands = {
   open: openCommand,
+  combineNew: async () => {
+    const files = await pickFiles('application/pdf', true);
+    if (files.length) openFiles(files);
+  },
+  imagesNew: async () => {
+    const files = await pickFiles('image/png,image/jpeg', true);
+    if (files.length) openFiles(files);
+  },
+  signNew: async () => {
+    const before = state;
+    await openCommand();
+    if (state !== before || state.bytes) setTimeout(() => commands.signature(), 300);
+  },
   newBlank: async () => {
     if (state.bytes) await switchTab(tabs.push(makeDoc()) - 1);
     Object.assign(state, { bytes: await E.createBlank(), fileName: 'Untitled.pdf', fileHandle: null, security: null, dirty: true, undo: [], redo: [] });
@@ -807,6 +885,7 @@ const commands = {
   manageFields: () => tools.manageFields(app),
   removeLinks: () => tools.removeLinks(app, sel()),
   compare: () => tools.compare(app),
+  visualCompare: () => visualCompare(app),
   digitalSign: () => {
     app.setTool('digisign');
     toast('Drag a box where the signature should appear');
@@ -959,6 +1038,8 @@ try {
 
 createIcons({ icons: ICONS });
 labelIconButtons();
+$('#clearRecent').addEventListener('click', async () => { await clearRecent(); renderStart(); });
+showStart();
 if (window.inkstoneDesktop) document.body.classList.add('desktop');
 if (localStorage.getItem('inkstone.panel') === 'hidden') document.body.classList.add('panel-collapsed');
 applyTheme(localStorage.getItem('inkstone.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));

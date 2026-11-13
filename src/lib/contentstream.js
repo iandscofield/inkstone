@@ -192,7 +192,8 @@ export function findTextOps(src, fontInfo) {
 
 /**
  * Choose the text operators that belong to a line: {origin, dir, height, length} in PDF
- * user space. An operator matches when it starts on that baseline inside the line's span.
+ * user space. An operator matches when it sits on that baseline and its run overlaps the
+ * line's span — including runs that begin a little earlier, such as leading indent spaces.
  */
 export function opsOnLine(ops, line) {
   const [ux, uy] = line.dir;
@@ -202,6 +203,10 @@ export function opsOnLine(ops, line) {
     const along = dx * ux + dy * uy;
     const across = -dx * uy + dy * ux;
     const h = Math.max(line.height, op.height);
-    return Math.abs(across) <= 0.35 * h && along >= -0.4 * h && along <= line.length - 0.05 * h;
+    if (Math.abs(across) > 0.35 * h) return false;
+    const alongEnd = (op.end[0] - line.origin[0]) * ux + (op.end[1] - line.origin[1]) * uy;
+    if (along >= -0.4 * h) return along <= line.length - 0.05 * h;
+    // Starts before the line: it must actually reach into it.
+    return alongEnd > 0.3 * h && along > -8 * h;
   });
 }
