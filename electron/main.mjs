@@ -6,6 +6,9 @@ import { existsSync, cpSync } from 'node:fs';
 import { basename, dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as signing from './signing.mjs';
+import { createRequire } from 'node:module';
+
+const { autoUpdater } = createRequire(import.meta.url)('electron-updater');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distDir = resolve(here, '..', 'dist');
@@ -175,6 +178,35 @@ ipcMain.handle('ids-export-cert', async (_e, id, password, name) => {
   return true;
 });
 ipcMain.handle('sign-pdf', (_e, opts) => signing.signPdf(opts));
+
+// ---------- updates ----------
+// Installed builds check GitHub Releases (configured when publishing; see README).
+// Portable copies and builds without a release feed report that updates aren't available.
+
+const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+const canUpdate = () => app.isPackaged && !isPortable && process.platform === 'win32';
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.logger = null;
+const sendUpdate = (status) => win?.webContents.send('update-status', status);
+autoUpdater.on('update-available', (info) => sendUpdate({ state: 'downloading', version: info.version }));
+autoUpdater.on('download-progress', (p) => sendUpdate({ state: 'downloading', percent: Math.round(p.percent) }));
+autoUpdater.on('update-downloaded', (info) => sendUpdate({ state: 'ready', version: info.version }));
+
+async function checkForUpdates() {
+  if (!canUpdate()) return { state: 'unavailable', reason: isPortable ? 'portable' : 'dev' };
+  try {
+    const r = await autoUpdater.checkForUpdates();
+    const latest = r?.updateInfo?.version;
+    return { state: r?.isUpdateAvailable ? 'downloading' : 'current', version: latest || app.getVersion() };
+  } catch (e) {
+    return { state: /app-update\.yml|ENOENT|No published versions/i.test(e.message) ? 'not-configured' : 'error', message: e.message };
+  }
+}
+
+ipcMain.handle('app-info', () => ({ version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome, canUpdate: canUpdate(), portable: isPortable }));
+ipcMain.handle('check-updates', () => checkForUpdates());
+ipcMain.handle('install-update', () => autoUpdater.quitAndInstall());
 ipcMain.handle('verify-pdf', (_e, bytes) => signing.verifyPdf(bytes));
 
 ipcMain.handle('show-in-folder', (_e, path) => {
@@ -200,6 +232,8 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
     pendingPaths.push(...filesFromArgv(process.argv));
     createWindow();
+    // Quietly look for an update a little after startup.
+    if (canUpdate()) setTimeout(() => checkForUpdates(), 8000);
     app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
   });
 

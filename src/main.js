@@ -1,14 +1,14 @@
 import './styles.css';
 import * as E from './lib/engine.js';
 import { openPdf, renderPageToCanvas } from './lib/pdfjs.js';
-import { $, $$, h, toast, setStatus, dialog, prompt, readBytes, saveBytes, baseName, desktopHandle } from './lib/ui.js';
+import { $, $$, h, toast, setStatus, dialog, prompt, readBytes, saveBytes, baseName, desktopHandle, labelIconButtons } from './lib/ui.js';
 import { Viewer } from './viewer.js';
 import { Thumbnails } from './thumbnails.js';
 import { Annotator, TYPE_LABELS } from './annotations.js';
 import * as tools from './tools.js';
-import { createIcons, ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink } from 'lucide';
+import { createIcons, Archive, ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, FileType, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Keyboard, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink } from 'lucide';
 
-const ICONS = { ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink };
+const ICONS = { Archive, ArrowDownUp, BadgeCheck, Bookmark, Check, ChevronDown, ChevronUp, Circle, CircleDot, Copy, Crop, Droplets, Eraser, FileImage, FileOutput, FilePlus, FileText, FileType, Files, FolderOpen, FormInput, GitCompare, Hand, Hash, Heading, Highlighter, ImagePlus, Info, KeyRound, Keyboard, Layers, LayoutGrid, Link, Lock, LockOpen, MessageSquare, Minimize2, Minus, Moon, MousePointer2, MoveUpRight, PanelRight, Pen, PencilLine, Plus, Printer, Redo2, RotateCcw, RotateCw, Save, ScanSearch, ScanText, Scissors, Search, Settings2, ShieldCheck, Signature, Slash, Square, SquareCheck, SquareChevronDown, SquareX, Stamp, Sun, TextCursorInput, Trash2, Type, Underline, Undo2, Unlink };
 
 const MAX_HISTORY = 40;
 
@@ -359,7 +359,7 @@ function renderSignatures() {
     box.append(h('div', { className: `sig-item ${level}`, onclick: () => tools.signatureDetails(s) },
       h('div', { className: 'sig-status' }, headline),
       h('strong', {}, s.name || 'Unknown signer'),
-      h('small', {}, s.signedAt ? new Date(s.signedAt).toLocaleString() : 'Signing time unknown'),
+      h('small', {}, s.timestamp?.matches ? `${new Date(s.timestamp.time).toLocaleString()} (trusted timestamp)` : s.signedAt ? `${new Date(s.signedAt).toLocaleString()} (signer's clock)` : 'Signing time unknown'),
       s.reason ? h('small', {}, s.reason) : null,
       !s.coversWholeFile && ok ? h('small', { className: 'muted' }, 'The document was updated after this signature (for example, by a later signature).') : null,
       !s.trusted && ok ? h('small', { className: 'muted' }, 'Self-signed or unknown certificate authority.') : null,
@@ -567,7 +567,7 @@ $$('#toolbar [data-tool]').forEach((btn) => {
 });
 
 $('#viewer').addEventListener('click', (e) => {
-  if (annots.tool === 'edittext') annots.editTextAt(e);
+  if (annots.tool === 'edittext') tools.editText(app, e);
 });
 $('#viewer').addEventListener('pointerdown', (e) => {
   if (annots.tool === 'select' && !e.target.closest('.ann, .handle')) annots.select(null);
@@ -762,6 +762,8 @@ const commands = {
     localStorage.setItem('inkstone.theme', theme);
   },
   togglePanel: () => {
+    // On narrow windows the panel is an overlay rather than a column.
+    if (matchMedia('(max-width: 1100px)').matches) { document.body.classList.toggle('panel-open'); return; }
     document.body.classList.toggle('panel-collapsed');
     localStorage.setItem('inkstone.panel', document.body.classList.contains('panel-collapsed') ? 'hidden' : 'shown');
     if (viewer.zoomMode.startsWith('fit')) setTimeout(() => viewer.setZoom(viewer.zoomMode), 0);
@@ -820,16 +822,32 @@ const commands = {
   compress: () => tools.compress(app),
   exportImages: () => tools.exportImages(app),
   exportText: () => tools.exportText(app),
+  exportWord: () => tools.exportWord(app),
+  pdfa: () => tools.saveAsPdfA(app),
+  shortcuts: () => tools.shortcuts(),
+  about: () => tools.about(),
 };
 app.commands = commands;
 
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-cmd]');
+  // Overlay panels close once you pick something or click elsewhere.
+  if (!e.target.closest('.panel, [data-cmd=togglePanel]')) document.body.classList.remove('panel-open');
+  else if (btn && btn.closest('.panel')) document.body.classList.remove('panel-open');
+  if (!e.target.closest('.sidebar, .rail')) document.body.classList.remove('sidebar-open');
   if (!btn || btn.disabled) return;
   commands[btn.dataset.cmd]?.();
 });
 
 $$('.tabs [data-tab]').forEach((btn) => btn.addEventListener('click', () => {
+  if (matchMedia('(max-width: 800px)').matches) {
+    // Narrow windows: the sidebar is an overlay; the rail toggles it.
+    const open = !(btn.classList.contains('active') && document.body.classList.contains('sidebar-open'));
+    document.body.classList.toggle('sidebar-open', open);
+    $$('.tabs [data-tab]').forEach((b) => b.classList.toggle('active', b === btn));
+    $$('[data-tab-body]').forEach((b) => { b.hidden = b.dataset.tabBody !== btn.dataset.tab; });
+    return;
+  }
   // Clicking the open tab again collapses the sidebar.
   const collapse = btn.classList.contains('active') && !document.body.classList.contains('sidebar-collapsed');
   document.body.classList.toggle('sidebar-collapsed', collapse);
@@ -940,6 +958,7 @@ try {
 } catch { /* storage unavailable */ }
 
 createIcons({ icons: ICONS });
+labelIconButtons();
 if (window.inkstoneDesktop) document.body.classList.add('desktop');
 if (localStorage.getItem('inkstone.panel') === 'hidden') document.body.classList.add('panel-collapsed');
 applyTheme(localStorage.getItem('inkstone.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
@@ -956,6 +975,19 @@ if (fileParam) {
 // Desktop app: receive files from "Open with" / double-click, now and later.
 if (window.inkstoneDesktop) {
   window.inkstoneDesktop.onOpenFiles(openDesktopFiles);
+  // Background update: show a restart button in the status bar once it's downloaded.
+  window.inkstoneDesktop.onUpdateStatus?.((s) => {
+    const btn = $('#updateNotice');
+    if (s.state === 'ready') {
+      btn.hidden = false;
+      btn.textContent = `Update ${s.version} ready — restart`;
+      btn.onclick = async () => { if (tabs.some((t) => t.dirty && t.bytes) && !(await confirmDiscard({ dirty: true, bytes: true, fileName: 'your open documents' }))) return; window.inkstoneDesktop.installUpdate(); };
+    } else if (s.state === 'downloading') {
+      btn.hidden = false;
+      btn.onclick = null;
+      btn.textContent = s.percent != null ? `Downloading update… ${s.percent}%` : `Downloading update ${s.version || ''}…`;
+    }
+  });
   window.inkstoneDesktop.ready().then(openDesktopFiles);
 }
 

@@ -217,14 +217,21 @@
         <section class="card">
           <h3>Export</h3>
           <button class="item" data-cmd="compress" data-needs-doc><i data-lucide="minimize-2"></i>Compress</button>
+          <button class="item" data-cmd="pdfa" data-needs-doc><i data-lucide="archive"></i>Save as PDF/A (archive)</button>
+          <button class="item" data-cmd="exportWord" data-needs-doc><i data-lucide="file-type"></i>Export to Word (.docx)</button>
           <button class="item" data-cmd="exportImages" data-needs-doc><i data-lucide="file-image"></i>Pages to images</button>
           <button class="item" data-cmd="exportText" data-needs-doc><i data-lucide="file-text"></i>Export text</button>
+        </section>
+        <section class="card">
+          <h3>Help</h3>
+          <button class="item" data-cmd="shortcuts"><i data-lucide="keyboard"></i>Keyboard shortcuts</button>
+          <button class="item" data-cmd="about"><i data-lucide="info"></i>About &amp; updates</button>
         </section>
       </aside>
     </div>
 
-    <footer class="statusbar" id="statusbar"><span id="statusText">No document</span><span id="statusRight"></span></footer>
-    <div id="toasts" class="toasts"></div>
+    <footer class="statusbar" id="statusbar"><span id="statusText">No document</span><span class="status-right"><button id="updateNotice" class="update-notice" hidden></button><span id="statusRight"></span></span></footer>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
     <input type="file" id="fileInput" accept="application/pdf,image/png,image/jpeg" multiple hidden />
     <script type="module" src="/src/main.js"></script>
   </body>

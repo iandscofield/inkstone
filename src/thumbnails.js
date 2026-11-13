@@ -25,7 +25,7 @@ export class Thumbnails {
     if (!pdf) return;
     this.selected = new Set([...this.selected].filter((i) => i < pdf.numPages));
     for (let i = 0; i < pdf.numPages; i++) {
-      const canvas = h('canvas', { width: THUMB_W, height: THUMB_W * 1.3 });
+      const canvas = h('canvas', { width: THUMB_W, height: THUMB_W * 1.3, role: 'img', 'aria-label': `Page ${i + 1}` });
       const div = h('div', { className: 'thumb', draggable: true, title: `Page ${i + 1}` }, canvas, h('div', { className: 'num' }, i + 1));
       div.dataset.index = i;
       div.addEventListener('click', (e) => this.onClick(e, i));

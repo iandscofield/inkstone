@@ -19,6 +19,10 @@ contextBridge.exposeInMainWorld('inkstoneDesktop', {
     exportCert: (id, password, name) => ipcRenderer.invoke('ids-export-cert', id, password, name),
   },
   signPdf: (opts) => ipcRenderer.invoke('sign-pdf', opts),
+  appInfo: () => ipcRenderer.invoke('app-info'),
+  checkUpdates: () => ipcRenderer.invoke('check-updates'),
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+  onUpdateStatus: (cb) => ipcRenderer.on('update-status', (_e, s) => cb(s)),
   verifyPdf: (bytes) => ipcRenderer.invoke('verify-pdf', bytes),
   onOpenFiles: (cb) => ipcRenderer.on('open-files', (_e, files) => cb(files)),
 });

@@ -14,6 +14,7 @@ const { P12Signer } = require('@signpdf/signer-p12');
 const { pdflibAddPlaceholder } = require('@signpdf/placeholder-pdf-lib');
 const { plainAddPlaceholder } = require('@signpdf/placeholder-plain');
 const { PDFDocument } = require('pdf-lib');
+const { Signer } = require('@signpdf/utils');
 
 const storeDir = () => join(app.getPath('userData'), 'digital-ids');
 const indexFile = () => join(storeDir(), 'ids.json');
@@ -128,6 +129,95 @@ export async function certificatePem(id, password) {
   return forge.pki.certificateToPem(cert);
 }
 
+// ---------- trusted timestamps (RFC 3161) ----------
+
+export const DEFAULT_TSA = 'http://timestamp.digicert.com';
+const OID_TST_TOKEN = '1.2.840.113549.1.9.16.2.14';
+const { asn1 } = forge;
+const A = (cls, type, constructed, value) => asn1.create(cls, type, constructed, value);
+const U = asn1.Class.UNIVERSAL, T = asn1.Type;
+
+/** Ask a timestamp authority to countersign `digest` (SHA-256). Returns the TimeStampToken ASN.1. */
+async function requestTimestamp(digest, tsaUrl) {
+  const nonce = forge.random.getBytesSync(8);
+  const req = A(U, T.SEQUENCE, true, [
+    A(U, T.INTEGER, false, asn1.integerToDer(1).getBytes()),
+    A(U, T.SEQUENCE, true, [
+      A(U, T.SEQUENCE, true, [A(U, T.OID, false, asn1.oidToDer(forge.pki.oids.sha256).getBytes()), A(U, T.NULL, false, '')]),
+      A(U, T.OCTETSTRING, false, digest.toString('binary')),
+    ]),
+    A(U, T.INTEGER, false, String.fromCharCode(nonce.charCodeAt(0) & 0x7f) + nonce.slice(1)),
+    A(U, T.BOOLEAN, false, '\xff'), // certReq: include the TSA certificate
+  ]);
+  const res = await fetch(tsaUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/timestamp-query' },
+    body: Buffer.from(asn1.toDer(req).getBytes(), 'binary'),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`Timestamp server returned ${res.status}`);
+  const resp = asn1.fromDer(forge.util.createBuffer(Buffer.from(await res.arrayBuffer()).toString('binary')));
+  const status = asn1.derToInteger(resp.value[0].value[0].value);
+  if (status > 1 || !resp.value[1]) throw new Error(`Timestamp request was rejected (status ${status})`);
+  return resp.value[1];
+}
+
+/** Wraps a signer so its PKCS#7 output carries a timestamp token as an unsigned attribute. */
+class TimestampingSigner extends Signer {
+  constructor(inner, tsaUrl) { super(); this.inner = inner; this.tsaUrl = tsaUrl; this.timestamped = false; this.error = null; }
+
+  async sign(pdfBuffer, signingTime) {
+    const der = await this.inner.sign(pdfBuffer, signingTime);
+    try {
+      const ci = asn1.fromDer(forge.util.createBuffer(der.toString('binary')));
+      const signedData = ci.value[1].value[0];
+      const signerInfo = signedData.value[signedData.value.length - 1].value[0];
+      const sigValue = signerInfo.value.find((n) => n.tagClass === U && n.type === T.OCTETSTRING);
+      const digest = createHash('sha256').update(Buffer.from(sigValue.value, 'binary')).digest();
+      const token = await requestTimestamp(digest, this.tsaUrl);
+      const tstAttr = A(U, T.SEQUENCE, true, [A(U, T.OID, false, asn1.oidToDer(OID_TST_TOKEN).getBytes()), A(U, T.SET, true, [token])]);
+      signerInfo.value.push(A(asn1.Class.CONTEXT_SPECIFIC, 1, true, [tstAttr])); // [1] IMPLICIT unsignedAttrs
+      this.timestamped = true;
+      return Buffer.from(asn1.toDer(ci).getBytes(), 'binary');
+    } catch (e) {
+      // Fall back to an untimestamped signature rather than failing the whole signing.
+      this.error = e.message || String(e);
+      return der;
+    }
+  }
+}
+
+/** Read a timestamp token from a signature's unsigned attributes: {time, authority, matches}. */
+function readTimestamp(unsignedAttrs, signatureBytes) {
+  const tsAttr = unsignedAttrs?.find((x) => asn1.derToOid(x.value[0].value) === OID_TST_TOKEN);
+  if (!tsAttr) return null;
+  try {
+    const token = tsAttr.value[1].value[0];
+    const sd = token.value[1].value[0];
+    const encap = sd.value.find((n) => n.tagClass === U && n.type === T.SEQUENCE && n.value[0]?.type === T.OID);
+    const tstDer = encap.value[1].value[0];
+    // Some encoders split the OCTET STRING into constructed chunks.
+    const octets = tstDer.constructed ? tstDer.value.map((p) => p.value).join('') : tstDer.value;
+    const tst = asn1.fromDer(forge.util.createBuffer(octets));
+    const imprint = tst.value[2];
+    const alg = DIGESTS[asn1.derToOid(imprint.value[0].value[0].value)] || 'sha256';
+    const matches = Buffer.from(imprint.value[1].value, 'binary').equals(createHash(alg).update(signatureBytes).digest());
+    const time = asn1.generalizedTimeToDate(tst.value[4].value).toISOString();
+    let authority = '';
+    const certSet = sd.value.find((n) => n.tagClass === asn1.Class.CONTEXT_SPECIFIC && n.type === 0);
+    for (const c of certSet?.value || []) {
+      try {
+        const cert = forge.pki.certificateFromAsn1(c);
+        const eku = cert.getExtension('extKeyUsage');
+        if (!authority || eku?.timeStamping) authority = attr(cert, 'CN') || attr(cert, 'O');
+      } catch { /* non-RSA certificate */ }
+    }
+    return { time, authority, matches };
+  } catch {
+    return { time: null, authority: '', matches: false };
+  }
+}
+
 // ---------- signing ----------
 
 /**
@@ -136,7 +226,11 @@ export async function certificatePem(id, password) {
  * The first signature rewrites the file; later ones are appended as incremental
  * updates so existing signatures stay valid.
  */
-export async function signPdf({ bytes, id, password, reason, location, contactInfo, widget }) {
+/**
+ * Returns {bytes, timestamped, timestampError}. With `timestamp`, the signature is
+ * countersigned by a timestamp authority (only a hash of the signature is sent).
+ */
+export async function signPdf({ bytes, id, password, reason, location, contactInfo, widget, timestamp = true, tsaUrl = DEFAULT_TSA }) {
   const p12 = await readIdFile(id);
   const { cert } = openP12(p12, password); // validates the password with a friendly error
   const name = attr(cert, 'CN');
@@ -152,8 +246,10 @@ export async function signPdf({ bytes, id, password, reason, location, contactIn
     pdflibAddPlaceholder({ pdfDoc, pdfPage: pdfDoc.getPage(widget?.page || 0), ...common });
     buf = Buffer.from(await pdfDoc.save({ useObjectStreams: false }));
   }
-  const signed = await signpdf.sign(buf, new P12Signer(p12, { passphrase: password }));
-  return new Uint8Array(signed);
+  const base = new P12Signer(p12, { passphrase: password });
+  const signer = timestamp ? new TimestampingSigner(base, tsaUrl || DEFAULT_TSA) : base;
+  const signed = await signpdf.sign(buf, signer);
+  return { bytes: new Uint8Array(signed), timestamped: !!signer.timestamped, timestampError: signer.error || null };
 }
 
 // ---------- verification ----------
@@ -257,7 +353,11 @@ export function verifyPdf(bytes) {
         info.integrity = info.signatureValid;
       }
       info.trusted = chainIsTrusted(signer, certs);
-      const when = info.signedAt ? new Date(info.signedAt) : new Date();
+      // A matching timestamp from an authority is a trusted signing time; prefer it over the signer's clock.
+      info.timestamp = readTimestamp(rc.unauthenticatedAttributes, signature);
+      if (info.timestamp && !info.timestamp.matches) info.problems.push('The timestamp does not match this signature.');
+      const trustedTime = info.timestamp?.matches && info.timestamp.time;
+      const when = trustedTime ? new Date(trustedTime) : info.signedAt ? new Date(info.signedAt) : new Date();
       if (when < signer.validity.notBefore || when > signer.validity.notAfter) info.problems.push('The certificate was not valid at signing time.');
     } catch (e) {
       info.problems.push(e.message || String(e));

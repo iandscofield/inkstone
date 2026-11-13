@@ -162,7 +162,7 @@ body.desktop .wco-spacer { display: block; width: 138px; height: 100%; }
 .swatch input::-webkit-color-swatch { border: 2px solid var(--surface); border-radius: 50%; box-shadow: 0 0 0 1px var(--border); }
 
 /* ---------- workspace ---------- */
-.workspace { flex: 1; display: flex; min-height: 0; }
+.workspace { flex: 1; display: flex; min-height: 0; position: relative; }
 .rail {
   flex: none;
   width: 52px;
@@ -411,3 +411,17 @@ body.panel-collapsed .panel { display: none; }
 .id-actions { display: flex; gap: 4px; flex: none; }
 .id-actions button { padding: 4px 9px; font-size: 12px; }
 .id-actions button.danger:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ---------- status bar extras ---------- */
+.status-right { display: flex; align-items: center; gap: 10px; }
+.update-notice { padding: 1px 8px; font-size: 11px; border-radius: 6px; background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+.update-notice[hidden] { display: none; }
+kbd { font: 11px ui-monospace, Consolas, monospace; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; white-space: nowrap; }
+
+/* ---------- narrow windows: side panels open as overlays ---------- */
+@media (max-width: 1100px) {
+  body.panel-open .panel { display: flex; position: absolute; right: 0; top: 0; bottom: 0; z-index: 30; box-shadow: var(--pop-shadow); }
+}
+@media (max-width: 800px) {
+  body.sidebar-open .sidebar { display: flex; position: absolute; left: 52px; top: 0; bottom: 0; z-index: 30; box-shadow: var(--pop-shadow); }
+}

@@ -2,10 +2,12 @@
 // Built on @cantoo/pdf-lib (a maintained pdf-lib fork with encryption support).
 import {
   PDFDocument, StandardFonts, rgb, degrees, LineCapStyle,
-  PDFName, PDFNumber, PDFString, PDFHexString, PDFRef, PDFDict, PDFArray, PDFStream,
+  PDFName, PDFNumber, PDFString, PDFHexString, PDFRef, PDFDict, PDFArray, PDFStream, PDFRawStream,
   PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup, PDFOptionList, PDFButton, PDFSignature,
+  decodePDFRawStream,
 } from '@cantoo/pdf-lib';
 import { hexToRgb01 } from './ui.js';
+import { findTextOps, opsOnLine } from './contentstream.js';
 
 export const APP_NAME = 'Inkstone';
 
@@ -603,6 +605,178 @@ export const updateFormFields = (bytes, changes) =>
     }
   });
 
+// ---------- PDF/A-2b ----------
+
+/** A small sRGB-like ICC v2 display profile (D50, sRGB primaries, gamma 2.2) for the output intent. */
+function srgbIccProfile() {
+  const enc = (s) => [...s].map((c) => c.charCodeAt(0));
+  const u32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const s15 = (v) => u32(Math.round(v * 65536) >>> 0);
+  const pad4 = (a) => { while (a.length % 4) a.push(0); return a; };
+  const desc = (text) => pad4([...enc('desc'), 0, 0, 0, 0, ...u32(text.length + 1), ...enc(text), 0, ...u32(0), ...u32(0), 0, 0, 0, ...new Array(67).fill(0)]);
+  const xyz = (x, y, z) => [...enc('XYZ '), 0, 0, 0, 0, ...s15(x), ...s15(y), ...s15(z)];
+  const curv = [...enc('curv'), 0, 0, 0, 0, ...u32(1), 0x02, 0x33, 0, 0];
+  const text = (t) => pad4([...enc('text'), 0, 0, 0, 0, ...enc(t), 0]);
+  const tags = [
+    ['desc', desc('sRGB (Inkstone)')], ['cprt', text('No copyright, use freely')], ['wtpt', xyz(0.9642, 1, 0.8249)],
+    ['rXYZ', xyz(0.4361, 0.2225, 0.0139)], ['gXYZ', xyz(0.3851, 0.7169, 0.0971)], ['bXYZ', xyz(0.1431, 0.0606, 0.7141)],
+    ['rTRC', curv], ['gTRC', curv], ['bTRC', curv],
+  ];
+  let offset = 128 + 4 + tags.length * 12;
+  const table = [...u32(tags.length)];
+  const data = [];
+  for (const [sig, bytes] of tags) {
+    table.push(...enc(sig), ...u32(offset), ...u32(bytes.length));
+    data.push(...bytes);
+    offset += bytes.length;
+  }
+  const header = [
+    ...u32(offset), ...u32(0), 0x02, 0x10, 0, 0, ...enc('mntr'), ...enc('RGB '), ...enc('XYZ '),
+    0, 0x07, 0, 0x01, 0, 0x01, 0, 0, 0, 0, 0, 0, // date 2025-01-01
+    ...enc('acsp'), ...u32(0), ...u32(0), ...u32(0), ...u32(0), ...u32(0), ...u32(0), ...u32(0), ...u32(0),
+    ...s15(0.9642), ...s15(1), ...s15(0.8249), ...u32(0),
+  ];
+  while (header.length < 128) header.push(0);
+  return new Uint8Array([...header, ...table, ...data]);
+}
+
+const xmlEscape = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]);
+
+/** Write PDF/A-2b XMP metadata matching the document information dictionary. */
+function writePdfAMetadata(doc) {
+  const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+  const created = doc.getCreationDate() ? new Date(Math.floor(doc.getCreationDate().getTime() / 1000) * 1000) : now;
+  doc.setCreationDate(created);
+  doc.setModificationDate(now);
+  doc.setProducer(APP_NAME);
+  doc.setCreator(doc.getCreator() || APP_NAME);
+  const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const title = doc.getTitle(), author = doc.getAuthor(), subject = doc.getSubject(), keywords = doc.getKeywords();
+  const xmp = `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:pdf="http://ns.adobe.com/pdf/1.3/">
+<pdfaid:part>2</pdfaid:part><pdfaid:conformance>B</pdfaid:conformance>
+<dc:format>application/pdf</dc:format>
+${title ? `<dc:title><rdf:Alt><rdf:li xml:lang="x-default">${xmlEscape(title)}</rdf:li></rdf:Alt></dc:title>` : ''}
+${author ? `<dc:creator><rdf:Seq><rdf:li>${xmlEscape(author)}</rdf:li></rdf:Seq></dc:creator>` : ''}
+${subject ? `<dc:description><rdf:Alt><rdf:li xml:lang="x-default">${xmlEscape(subject)}</rdf:li></rdf:Alt></dc:description>` : ''}
+${keywords ? `<pdf:Keywords>${xmlEscape(keywords)}</pdf:Keywords>` : ''}
+<pdf:Producer>${APP_NAME}</pdf:Producer>
+<xmp:CreatorTool>${xmlEscape(doc.getCreator())}</xmp:CreatorTool>
+<xmp:CreateDate>${iso(created)}</xmp:CreateDate><xmp:ModifyDate>${iso(now)}</xmp:ModifyDate><xmp:MetadataDate>${iso(now)}</xmp:MetadataDate>
+</rdf:Description></rdf:RDF></x:xmpmeta>
+<?xpacket end="w"?>`;
+  const bytes = new TextEncoder().encode(xmp);
+  const stream = doc.context.stream(bytes, { Type: 'Metadata', Subtype: 'XML', Length: bytes.length });
+  doc.catalog.set(PDFName.of('Metadata'), doc.context.register(stream));
+}
+
+function hasPdfAMetadata(doc) {
+  const m = doc.catalog.lookupMaybe(PDFName.of('Metadata'), PDFStream);
+  if (!m) return false;
+  try {
+    const raw = m instanceof PDFRawStream ? decodePDFRawStream(m).decode() : m.getContents();
+    return new TextDecoder().decode(raw).includes('pdfaid:part');
+  } catch { return false; }
+}
+
+/** Font names used without embedded font programs, walking forms and annotation appearances. */
+function nonEmbeddedFonts(doc, resources, seen = new Set()) {
+  const out = new Set();
+  if (!(resources instanceof PDFDict) || seen.has(resources)) return out;
+  seen.add(resources);
+  const fonts = resources.lookupMaybe(PDFName.of('Font'), PDFDict);
+  for (const [, ref] of fonts?.entries() || []) {
+    const f = doc.context.lookup(ref);
+    if (!(f instanceof PDFDict) || f.get(PDFName.of('Subtype'))?.toString() === '/Type3') continue;
+    const target = f.get(PDFName.of('Subtype'))?.toString() === '/Type0' ? f.lookupMaybe(PDFName.of('DescendantFonts'), PDFArray)?.lookupMaybe(0, PDFDict) : f;
+    const fd = target?.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict);
+    if (!fd || !['FontFile', 'FontFile2', 'FontFile3'].some((k) => fd.get(PDFName.of(k)))) {
+      out.add((f.get(PDFName.of('BaseFont'))?.toString() || '/unknown').slice(1).replace(/^[A-Z]{6}\+/, ''));
+    }
+  }
+  const xobjects = resources.lookupMaybe(PDFName.of('XObject'), PDFDict);
+  for (const [, ref] of xobjects?.entries() || []) {
+    const x = doc.context.lookup(ref);
+    if (x instanceof PDFStream && x.dict.get(PDFName.of('Subtype'))?.toString() === '/Form') {
+      for (const n of nonEmbeddedFonts(doc, x.dict.lookupMaybe(PDFName.of('Resources'), PDFDict), seen)) out.add(n);
+    }
+  }
+  return out;
+}
+
+const AP_EXEMPT = new Set(['/Link', '/Popup']);
+
+/**
+ * Check what stands between a document and PDF/A-2b.
+ * Returns {fonts: [{page, names}], scripts, attachments, annotsNoAppearance, needAppearances, isPdfA}
+ */
+export async function pdfaPreflight(bytes) {
+  const doc = await load(bytes);
+  const fonts = [];
+  let annotsNoAppearance = 0;
+  doc.getPages().forEach((page, i) => {
+    const names = nonEmbeddedFonts(doc, page.node.Resources());
+    for (const a of page.node.Annots()?.asArray() || []) {
+      const d = doc.context.lookup(a);
+      if (!(d instanceof PDFDict) || AP_EXEMPT.has(d.get(PDFName.of('Subtype'))?.toString())) continue;
+      const ap = d.lookupMaybe(PDFName.of('AP'), PDFDict);
+      const n = ap?.lookup(PDFName.of('N'));
+      if (!n) { annotsNoAppearance++; continue; }
+      const streams = n instanceof PDFStream ? [n] : n instanceof PDFDict ? n.entries().map(([, r]) => doc.context.lookup(r)) : [];
+      for (const s of streams) if (s instanceof PDFStream) for (const fn of nonEmbeddedFonts(doc, s.dict.lookupMaybe(PDFName.of('Resources'), PDFDict))) names.add(fn);
+    }
+    if (names.size) fonts.push({ page: i, names: [...names] });
+  });
+  const names = doc.catalog.lookupMaybe(PDFName.of('Names'), PDFDict);
+  const acro = doc.catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict);
+  return {
+    fonts,
+    scripts: !!(names?.get(PDFName.of('JavaScript')) || doc.catalog.get(PDFName.of('OpenAction')) || doc.catalog.get(PDFName.of('AA'))),
+    attachments: !!names?.get(PDFName.of('EmbeddedFiles')),
+    annotsNoAppearance,
+    needAppearances: acro?.get(PDFName.of('NeedAppearances'))?.toString() === 'true',
+    isPdfA: hasPdfAMetadata(doc),
+  };
+}
+
+/**
+ * Apply the automatic PDF/A-2b fixes. Pages with non-embedded fonts must already have
+ * been rasterized by the caller.
+ */
+export const convertToPdfA = (bytes) =>
+  edit(bytes, (doc) => {
+    // Scripts, automatic actions and attachments aren't allowed (document properties are kept).
+    for (const k of ['OpenAction', 'AA']) doc.catalog.delete(PDFName.of(k));
+    const names = doc.catalog.lookupMaybe(PDFName.of('Names'), PDFDict);
+    if (names) for (const k of ['JavaScript', 'EmbeddedFiles']) names.delete(PDFName.of(k));
+    for (const page of doc.getPages()) {
+      page.node.delete(PDFName.of('AA'));
+      const arr = page.node.Annots();
+      if (!arr) continue;
+      for (let j = arr.size() - 1; j >= 0; j--) {
+        const d = arr.lookupMaybe(j, PDFDict);
+        if (!d) continue;
+        const sub = d.get(PDFName.of('Subtype'))?.toString();
+        if (sub === '/FileAttachment' || sub === '/Sound' || sub === '/Movie') { arr.remove(j); continue; }
+        if (d.lookupMaybe(PDFName.of('A'), PDFDict)?.get(PDFName.of('S'))?.toString() === '/JavaScript') d.delete(PDFName.of('A'));
+        if (!AP_EXEMPT.has(sub) && !d.lookupMaybe(PDFName.of('AP'), PDFDict)?.get(PDFName.of('N'))) { arr.remove(j); continue; }
+        // Annotations must print and may not be hidden.
+        const flags = d.lookupMaybe(PDFName.of('F'), PDFNumber)?.asNumber() || 0;
+        d.set(PDFName.of('F'), PDFNumber.of((flags | 4) & ~(1 | 2 | 32)));
+        d.delete(PDFName.of('AA'));
+      }
+    }
+    doc.catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict)?.delete(PDFName.of('NeedAppearances'));
+    const icc = doc.context.register(doc.context.flateStream(srgbIccProfile(), { N: 3 }));
+    doc.catalog.set(PDFName.of('OutputIntents'), doc.context.obj([doc.context.obj({
+      Type: 'OutputIntent', S: 'GTS_PDFA1', OutputConditionIdentifier: PDFString.of('sRGB IEC61966-2.1'), Info: PDFString.of('sRGB IEC61966-2.1'), DestOutputProfile: icc,
+    })]));
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+    doc.context.trailerInfo.ID = doc.context.obj([PDFHexString.of(id), PDFHexString.of(id)]);
+    writePdfAMetadata(doc);
+  });
+
 // ---------- hidden data ----------
 
 /**
@@ -626,6 +800,122 @@ export const scrubHiddenData = (bytes) =>
         if (sub === '/FileAttachment' || sub === '/Sound' || sub === '/Movie') arr.remove(j);
         else if (a) { a.delete(PDFName.of('AA')); if (a.lookupMaybe(PDFName.of('A'), PDFDict)?.get(PDFName.of('S'))?.toString() === '/JavaScript') a.delete(PDFName.of('A')); }
       }
+    }
+  });
+
+// ---------- real text editing ----------
+
+/** The page's content streams decoded and joined, as a latin1 string (one char per byte). */
+function pageContentString(doc, page) {
+  const parts = [];
+  for (const ref of contentRefs(page)) {
+    const stream = doc.context.lookup(ref);
+    if (!(stream instanceof PDFStream)) continue;
+    const bytes = stream instanceof PDFRawStream ? decodePDFRawStream(stream).decode() : stream.getContents?.() || new Uint8Array();
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    parts.push(s);
+  }
+  return parts.join('\n');
+}
+
+/** Glyph-width lookup for the fonts in a page's resources (enough to follow text positions). */
+function fontInfoFor(page) {
+  const fonts = page.node.Resources()?.lookupMaybe(PDFName.of('Font'), PDFDict);
+  const cache = new Map();
+  const num = (x) => (x && typeof x.asNumber === 'function' ? x.asNumber() : 0);
+  return (name) => {
+    if (!name || !fonts) return null;
+    if (cache.has(name)) return cache.get(name);
+    let info = null;
+    const f = fonts.lookupMaybe(PDFName.of(name), PDFDict);
+    if (f) {
+      const baseFont = f.get(PDFName.of('BaseFont'))?.decodeText?.() || f.get(PDFName.of('BaseFont'))?.asString?.() || '';
+      const subtype = f.get(PDFName.of('Subtype'))?.toString();
+      if (subtype === '/Type0') {
+        const desc = f.lookupMaybe(PDFName.of('DescendantFonts'), PDFArray)?.lookupMaybe(0, PDFDict);
+        const dw = num(desc?.lookup(PDFName.of('DW'))) || 1000;
+        const widths = new Map();
+        const w = desc?.lookupMaybe(PDFName.of('W'), PDFArray)?.asArray() || [];
+        for (let i = 0; i < w.length;) {
+          const first = num(desc.context.lookup(w[i]));
+          const next = desc.context.lookup(w[i + 1]);
+          if (next instanceof PDFArray) {
+            next.asArray().forEach((x, k) => widths.set(first + k, num(desc.context.lookup(x))));
+            i += 2;
+          } else {
+            const last = num(next), width = num(desc.context.lookup(w[i + 2]));
+            for (let c = first; c <= last; c++) widths.set(c, width);
+            i += 3;
+          }
+        }
+        info = { twoByte: true, width: (c) => widths.get(c) ?? dw, baseFont };
+      } else {
+        const first = num(f.lookup(PDFName.of('FirstChar')));
+        const widths = f.lookupMaybe(PDFName.of('Widths'), PDFArray)?.asArray().map((x) => num(f.context.lookup(x)));
+        const missing = num(f.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict)?.lookup(PDFName.of('MissingWidth')));
+        const fallback = /Courier/i.test(baseFont) ? 600 : missing || 500;
+        info = { twoByte: false, width: (c) => widths?.[c - first] ?? fallback, baseFont };
+      }
+    }
+    cache.set(name, info);
+    return info;
+  };
+}
+
+/** Map a PDF font name such as "ABCDEF+TimesNewRomanPS-BoldItalicMT" to a style. */
+export function styleFromFontName(name = '') {
+  const n = name.replace(/^[A-Z]{6}\+/, '');
+  return {
+    family: /Courier|Mono|Consol|Menlo|Typewriter/i.test(n) ? 'mono' : /Times|Serif|Georgia|Garamond|Cambria|Palatino|Book|Minion|Roman(?!.*Sans)/i.test(n) && !/Sans/i.test(n) ? 'serif' : 'sans',
+    bold: /Bold|Black|Heavy|Semibold|Demi|,B\b/i.test(n),
+    italic: /Italic|Oblique|,I\b/i.test(n),
+  };
+}
+
+const STD = {
+  sans: [StandardFonts.Helvetica, StandardFonts.HelveticaBold, StandardFonts.HelveticaOblique, StandardFonts.HelveticaBoldOblique],
+  serif: [StandardFonts.TimesRoman, StandardFonts.TimesRomanBold, StandardFonts.TimesRomanItalic, StandardFonts.TimesRomanBoldItalic],
+  mono: [StandardFonts.Courier, StandardFonts.CourierBold, StandardFonts.CourierOblique, StandardFonts.CourierBoldOblique],
+};
+
+/**
+ * Find the text runs on a line. line: {origin:[x,y], dir:[ux,uy], height, length} in PDF space.
+ * Returns {count, color:'#rrggbb', size, fontName} describing the original text.
+ */
+export async function probeTextLine(bytes, pageIndex, line) {
+  const doc = await load(bytes);
+  const page = doc.getPage(pageIndex);
+  const fi = fontInfoFor(page);
+  const ops = opsOnLine(findTextOps(pageContentString(doc, page), fi), line);
+  const first = ops[0];
+  const toHex = (rgbArr) => `#${rgbArr.map((v) => Math.round(Math.max(0, Math.min(1, v ?? 0)) * 255).toString(16).padStart(2, '0')).join('')}`;
+  return { count: ops.length, color: first ? toHex(first.fill) : '#000000', size: first ? first.height : line.height, fontName: first ? fi(first.font)?.baseFont || '' : '' };
+}
+
+/**
+ * Remove the original text on a line from the page and draw `repl` in its place.
+ * repl: {text, family:'sans'|'serif'|'mono', bold, italic, size, color}
+ * Throws if the text can't be found in the page's own drawing instructions
+ * (for example when it lives inside a form XObject).
+ */
+export const replaceTextLine = (bytes, pageIndex, line, repl) =>
+  edit(bytes, async (doc) => {
+    const page = doc.getPage(pageIndex);
+    const src = pageContentString(doc, page);
+    const ops = opsOnLine(findTextOps(src, fontInfoFor(page)), line);
+    if (!ops.length) throw Object.assign(new Error('The original text could not be located in the page content.'), { code: 'NOT_FOUND' });
+    // Splice the operators out (keeping any line moves they implied), back to front.
+    let out = src;
+    for (const op of [...ops].sort((a, b) => b.s - a.s)) out = `${out.slice(0, op.s)}${op.replace ? ` ${op.replace} ` : ' '}${out.slice(op.e)}`;
+    const bytesOut = new Uint8Array(out.length);
+    for (let i = 0; i < out.length; i++) bytesOut[i] = out.charCodeAt(i) & 255;
+    page.node.set(CONTENTS, doc.context.register(doc.context.flateStream(bytesOut)));
+    if (repl.text) {
+      const variants = STD[repl.family] || STD.sans;
+      const font = await doc.embedFont(variants[(repl.bold ? 1 : 0) + (repl.italic ? 2 : 0)]);
+      const angle = (Math.atan2(line.dir[1], line.dir[0]) * 180) / Math.PI;
+      page.drawText(safeText(font, repl.text), { x: line.origin[0], y: line.origin[1], size: repl.size, font, color: color(repl.color), rotate: degrees(angle) });
     }
   });
 
@@ -781,6 +1071,11 @@ export const setMetadata = (bytes, m) =>
 /** Final output for Save: stamp modification date, optionally encrypt. */
 export async function prepareForSave(bytes, security) {
   const doc = await load(bytes);
+  if (!security && hasPdfAMetadata(doc)) {
+    // Keep a PDF/A file's XMP metadata in step with its document information.
+    writePdfAMetadata(doc);
+    return finalize(doc);
+  }
   doc.setModificationDate(new Date());
   doc.setProducer(`${APP_NAME} (open source)`);
   if (security) {

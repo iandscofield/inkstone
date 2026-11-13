@@ -458,6 +458,88 @@ function textBox(p, it, from, to) {
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
 
+// ---------- Edit Text (real replacement) ----------
+
+const itemGeo = (it) => {
+  const [a, b, c, d, e, f] = it.transform;
+  const len = Math.hypot(a, b) || 1;
+  return { ux: a / len, uy: b / len, h: Math.hypot(c, d), x: e, y: f, w: it.width };
+};
+
+/** The clicked text item and its whole line (neighbouring items on the same baseline). */
+function lineAt(p, items, vx, vy) {
+  const hit = items.find((it) => {
+    const bx = textBox(p, it, 0, it.str.length);
+    return vx >= bx.x - 1 && vx <= bx.x + bx.w + 1 && vy >= bx.y - 1 && vy <= bx.y + bx.h + 1;
+  });
+  if (!hit) return null;
+  const g0 = itemGeo(hit);
+  const along = (it) => { const g = itemGeo(it); return (g.x - g0.x) * g0.ux + (g.y - g0.y) * g0.uy; };
+  const across = (it) => { const g = itemGeo(it); return -(g.x - g0.x) * g0.uy + (g.y - g0.y) * g0.ux; };
+  const same = items.filter((it) => {
+    const g = itemGeo(it);
+    return g.ux * g0.ux + g.uy * g0.uy > 0.98 && Math.abs(across(it)) < 0.35 * Math.max(g.h, g0.h);
+  }).sort((a, b) => along(a) - along(b));
+  // Grow outwards from the clicked item while the gaps look like word spacing, not columns.
+  const gapOk = (a, b) => along(b) - (along(a) + a.width) < 1.5 * g0.h;
+  let lo = same.indexOf(hit), hi = lo;
+  while (lo > 0 && gapOk(same[lo - 1], same[lo])) lo--;
+  while (hi < same.length - 1 && gapOk(same[hi], same[hi + 1])) hi++;
+  const run = same.slice(lo, hi + 1);
+  let text = '';
+  run.forEach((it, k) => {
+    if (k > 0) {
+      const gap = along(it) - (along(run[k - 1]) + run[k - 1].width);
+      if (gap > 0.2 * g0.h && !text.endsWith(' ') && !it.str.startsWith(' ')) text += ' ';
+    }
+    text += it.str;
+  });
+  const g1 = itemGeo(run[0]);
+  const last = run[run.length - 1];
+  return {
+    text: text.trim(), fontKey: run[0].fontName,
+    line: { origin: [g1.x, g1.y], dir: [g0.ux, g0.uy], height: g0.h, length: along(last) - along(run[0]) + last.width },
+  };
+}
+
+/**
+ * Edit Text: click a line, change it, and the original text is removed from the page
+ * and replaced (matching size, color and the closest standard font). Falls back to
+ * covering the text when it lives somewhere Inkstone can't rewrite.
+ */
+export async function editText(app, e) {
+  const p = app.viewer.pageFromElement(e.target);
+  if (!p) return;
+  const [vx, vy] = app.viewer.clientToPage(p, e.clientX, e.clientY);
+  const tc = await p.page.getTextContent();
+  const items = tc.items.filter((it) => it.str);
+  const found = lineAt(p, items, vx, vy);
+  if (!found) return toast('Click directly on a line of text to edit it');
+  const probe = await E.probeTextLine(app.state.bytes, p.index, found.line);
+  if (!probe.count) {
+    toast('This text is inside an embedded graphic, so it will be covered and replaced instead.', 'info', 6000);
+    return app.annots.editTextAt(e);
+  }
+  const style = E.styleFromFontName(probe.fontName || tc.styles[found.fontKey]?.fontFamily || '');
+  if (!probe.fontName && /serif/i.test(tc.styles[found.fontKey]?.fontFamily || '') && !/sans/i.test(tc.styles[found.fontKey]?.fontFamily)) style.family = 'serif';
+  const size = Math.round(probe.size * 2) / 2;
+  const body = h('div', { style: { width: 'min(560px, 84vw)' } },
+    h('input', { type: 'text', name: 'text', value: found.text, style: { width: '100%', fontSize: '15px' } }),
+    h('div', { className: 'form-grid', style: { marginTop: '12px' } },
+      h('label', {}, 'Font'), h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+        h('select', { name: 'family' }, [['sans', 'Sans-serif (Helvetica)'], ['serif', 'Serif (Times)'], ['mono', 'Monospace (Courier)']].map(([v, l]) => h('option', { value: v, selected: v === style.family }, l))),
+        h('label', {}, h('input', { type: 'checkbox', name: 'bold', checked: style.bold }), ' Bold'),
+        h('label', {}, h('input', { type: 'checkbox', name: 'italic', checked: style.italic }), ' Italic')),
+      h('label', {}, 'Size'), h('input', { type: 'number', name: 'size', value: size, min: 2, max: 400, step: 0.5, style: { width: '90px' } }),
+      h('label', {}, 'Color'), h('input', { type: 'color', name: 'color', value: probe.color }),
+      h('p', { className: 'full muted small' }, `The original text${probe.fontName ? ` (${probe.fontName.replace(/^[A-Z]{6}\+/, '')})` : ''} is removed from the page and your edit is written in its place. Leave the box empty to delete the line.`)));
+  const { value, form } = await dialog({ title: 'Edit text', body, buttons: [{ label: 'Cancel', value: null }, { label: 'Replace text', value: 'ok', primary: true }] });
+  if (!value) return;
+  const v = formValues(form);
+  if (v.text === found.text && v.family === style.family && v.bold === style.bold && v.italic === style.italic && v.size === size && v.color === probe.color) return;
+  await app.runOp('Editing text', (b) => E.replaceTextLine(b, p.index, found.line, { text: v.text, family: v.family, bold: v.bold, italic: v.italic, size: v.size || size, color: v.color }));
+}
+
 /** Mark every occurrence of a phrase for redaction. */
 export async function findAndRedact(app) {
   const { value, form } = await dialog({
@@ -752,6 +834,9 @@ export async function digitalSign(app, page, rect) {
     h('datalist', { id: 'sigReasons' }, REASONS.map((r) => h('option', { value: r }))),
     h('label', {}, 'Location'), h('input', { type: 'text', name: 'location', placeholder: 'optional, e.g. Portland, OR' }),
     h('label', {}, 'Contact'), h('input', { type: 'text', name: 'contact', placeholder: 'optional' }),
+    h('label', {}, 'Timestamp'), h('label', { title: 'Only a fingerprint of the signature is sent to the timestamp server — never the document.' },
+      h('input', { type: 'checkbox', name: 'timestamp', checked: localStorage.getItem('inkstone.tsa') !== 'off' }),
+      ' Add a trusted timestamp (contacts timestamp.digicert.com)'),
     alreadySigned
       ? h('p', { className: 'full muted small' }, 'This document is already signed, so this signature is added as an update that keeps the earlier signatures valid. It will be listed in the Signatures panel but has no visible stamp on the page.')
       : [h('label', {}, 'Appearance'), h('label', {}, h('input', { type: 'checkbox', name: 'withImage', checked: !!sigs.length, disabled: !sigs.length }), sigs.length ? ' Include my handwritten signature' : ' (save a handwritten signature with Sign to include it)'),
@@ -779,7 +864,10 @@ export async function digitalSign(app, page, rect) {
         name: id.name, date, reason: v.reason, location: v.location, image: v.withImage ? chosenImage : null,
       }));
     }
-    const signed = await desk.signPdf({ bytes, id: id.id, password: v.password, reason: v.reason, location: v.location, contactInfo: v.contact, widget: { page, rect: widgetRect } });
+    try { localStorage.setItem('inkstone.tsa', v.timestamp ? 'on' : 'off'); } catch { /* storage unavailable */ }
+    const result = await desk.signPdf({ bytes, id: id.id, password: v.password, reason: v.reason, location: v.location, contactInfo: v.contact, widget: { page, rect: widgetRect }, timestamp: v.timestamp });
+    const signed = result.bytes;
+    if (v.timestamp && !result.timestamped) toast(`Couldn't reach the timestamp server (${result.timestampError}). The signature uses your computer's clock instead.`, 'error', 8000);
     setStatus('');
     const handle = await saveBytes(signed, `${baseName(st.fileName).replace(/-signed$/, '')}-signed.pdf`);
     if (handle === undefined) return toast('Signing cancelled — nothing was saved.');
@@ -799,6 +887,9 @@ export function signatureDetails(sig) {
     title: `Signature by ${sig.name || 'unknown signer'}`,
     body: h('div', { className: 'form-grid', style: { width: 'min(560px, 84vw)' } },
       row('Signed', sig.signedAt ? new Date(sig.signedAt).toLocaleString() : 'unknown'),
+      row('Timestamp', sig.timestamp?.matches
+        ? `${new Date(sig.timestamp.time).toLocaleString()} — certified by ${sig.timestamp.authority || 'a timestamp authority'}`
+        : sig.timestamp ? 'Present but does not match this signature' : 'None (time comes from the signer\'s computer)'),
       row('Reason', sig.reason), row('Location', sig.location), row('Contact', sig.contactInfo),
       row('Document integrity', sig.integrity ? 'Not changed since signing' : 'Altered after signing'),
       row('Covers', sig.coversWholeFile ? 'The whole current document' : 'The document as it was when signed (later changes exist)'),
@@ -808,6 +899,127 @@ export function signatureDetails(sig) {
       row('Identity', sig.trusted ? 'Verified: chains to a trusted certificate authority' : 'Not verified: self-signed or unknown certificate authority'),
       h('label', { className: 'muted' }, 'SHA-256 fingerprint'), h('code', { style: { fontSize: '11px', wordBreak: 'break-all' } }, c.fingerprint || '—'),
       sig.problems?.length ? h('p', { className: 'full', style: { color: 'var(--accent-text)' } }, sig.problems.join(' ')) : null),
+    buttons: [{ label: 'Close', value: null, primary: true }],
+  });
+}
+
+// ---------- PDF/A ----------
+
+/** Save an archival PDF/A-2b copy: preflight, fix what can be fixed, and re-check. */
+export async function saveAsPdfA(app) {
+  const st = app.state;
+  if (app.annots.list.some((a) => a.type === 'redact')) return toast('Apply or remove the pending redactions first.', 'error');
+  setStatus('Checking document…');
+  const flat = await app.outputBytes();
+  const pre = await E.pdfaPreflight(flat);
+  setStatus('');
+  const fontPages = pre.fonts.map((f) => f.page);
+  const li = (t) => h('li', {}, t);
+  const flattenBox = h('input', { type: 'checkbox', checked: true });
+  const rasterBox = h('input', { type: 'checkbox', checked: false });
+  const body = h('div', { style: { width: 'min(600px, 86vw)' } },
+    h('p', {}, 'PDF/A is the ISO standard for long-term archiving. Inkstone saves a separate PDF/A-2b copy and keeps your current document as it is.'),
+    h('p', { className: 'muted small', style: { margin: '0 0 4px' } }, 'Fixed automatically:'),
+    h('ul', { className: 'small', style: { marginTop: 0 } },
+      li('Add archival metadata and an sRGB color profile'),
+      pre.scripts ? li('Remove scripts and automatic actions') : null,
+      pre.attachments ? li('Remove file attachments') : null,
+      pre.annotsNoAppearance ? li(`Remove ${pre.annotsNoAppearance} comment(s) that have no fixed appearance`) : null,
+      app.annots.list.length ? li('Your markup is drawn into the pages') : null,
+      st.security ? li('Password protection is removed (PDF/A can\'t be encrypted)') : null),
+    h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, flattenBox, 'Flatten form fields (recommended)'),
+    fontPages.length
+      ? h('div', { className: 'sig-banner warn', style: { marginTop: '10px' } },
+        h('p', { style: { margin: '0 0 6px' } }, `${fontPages.length} page(s) use fonts that aren't embedded in the file (${[...new Set(pre.fonts.flatMap((f) => f.names))].slice(0, 6).join(', ')}). PDF/A requires every font to be embedded.`),
+        h('label', { style: { display: 'flex', gap: '6px', alignItems: 'flex-start' } }, rasterBox,
+          h('span', {}, `Convert page${fontPages.length === 1 ? '' : 's'} ${fontPages.map((p) => p + 1).join(', ')} to images. Text on ${fontPages.length === 1 ? 'that page' : 'those pages'} won't be selectable or searchable.`)))
+      : null);
+  const { value } = await dialog({
+    title: 'Save as PDF/A', body,
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Save PDF/A copy…', value: 'ok', primary: true }],
+    validate: (f, val) => (val && fontPages.length && !rasterBox.checked ? 'PDF/A needs embedded fonts — tick the box to convert those pages to images, or cancel.' : null),
+  });
+  if (!value) return;
+  try {
+    setStatus('Converting to PDF/A…');
+    let bytes = flat;
+    if (flattenBox.checked) bytes = await E.flattenForm(bytes);
+    if (fontPages.length) {
+      const pdf = await openPdf(bytes);
+      const reps = [];
+      for (const i of fontPages) {
+        const { canvas, viewport } = await renderPageToCanvas(pdf, i, 2);
+        reps.push({ index: i, image: await canvasToBytes(canvas, 'image/jpeg', 0.92), png: false, vw: viewport.width / 2, vh: viewport.height / 2 });
+      }
+      pdf.destroy();
+      bytes = await E.rasterizePages(bytes, reps);
+    }
+    bytes = await E.convertToPdfA(bytes);
+    const check = await E.pdfaPreflight(bytes);
+    setStatus('');
+    const remaining = [check.fonts.length && 'non-embedded fonts', check.scripts && 'scripts', check.attachments && 'attachments', check.annotsNoAppearance && 'comments without appearance'].filter(Boolean);
+    if (remaining.length) return toast(`Couldn't make a valid PDF/A copy: ${remaining.join(', ')} remain.`, 'error', 7000);
+    const handle = await saveBytes(bytes, `${baseName(st.fileName)}-PDFA.pdf`);
+    if (handle === undefined) return toast('Cancelled — nothing was saved.');
+    toast(`Saved PDF/A-2b copy${handle?.name ? ` as ${handle.name}` : ''}. It passes Inkstone's checks; use a validator such as veraPDF for formal certification.`, 'info', 8000);
+  } catch (e) {
+    setStatus('');
+    toast(`PDF/A conversion failed: ${e.message}`, 'error', 7000);
+  }
+}
+
+// ---------- help ----------
+
+export function shortcuts() {
+  const rows = [
+    ['Ctrl+O / Ctrl+S / Ctrl+Shift+S / Ctrl+P', 'Open, save, save as, print'],
+    ['Ctrl+Z / Ctrl+Y', 'Undo, redo'],
+    ['Ctrl+W / Ctrl+Tab', 'Close tab, next tab (Shift for previous)'],
+    ['Ctrl+F, Enter / Shift+Enter', 'Find, next / previous match'],
+    ['Ctrl+H / Ctrl+U', 'Highlight / underline selected text'],
+    ['Ctrl+= / Ctrl+− / Ctrl+0', 'Zoom in, out, 100%'],
+    ['V H E T D R O L A N', 'Select, hand, edit text, text, draw, rectangle, ellipse, line, arrow, note'],
+    ['Delete, arrow keys, Ctrl+D', 'Delete, nudge (Shift = 10pt), duplicate the selection'],
+    ['Shift while drawing', 'Square/circle or 45° lines'],
+    ['Page Up / Page Down', 'Previous / next page'],
+    ['Esc', 'Close dialog, back to Select'],
+  ];
+  dialog({
+    title: 'Keyboard shortcuts',
+    body: h('table', { className: 'fields-table' }, h('tbody', {}, rows.map(([k, d]) => h('tr', {}, h('td', {}, h('kbd', {}, k)), h('td', {}, d))))),
+    buttons: [{ label: 'Close', value: null, primary: true }],
+  });
+}
+
+export async function about() {
+  const desk = window.inkstoneDesktop;
+  const info = desk?.appInfo ? await desk.appInfo() : null;
+  const status = h('p', { className: 'muted small' });
+  const checkBtn = desk?.checkUpdates ? h('button', {
+    onclick: async () => {
+      checkBtn.disabled = true;
+      status.textContent = 'Checking for updates…';
+      const r = await desk.checkUpdates();
+      checkBtn.disabled = false;
+      status.textContent = {
+        current: `You're up to date (version ${r.version}).`,
+        downloading: `Version ${r.version} is available and downloading. You'll be asked to restart when it's ready.`,
+        unavailable: r.reason === 'portable' ? 'The portable edition doesn\'t update itself. Download the latest version to update.' : 'Updates are only available in the installed app.',
+        'not-configured': 'This build has no update feed configured yet.',
+        error: `Couldn't check for updates: ${r.message}`,
+      }[r.state] || '';
+    },
+  }, 'Check for updates') : null;
+  dialog({
+    title: 'About Inkstone',
+    body: h('div', { style: { width: 'min(460px, 84vw)', textAlign: 'center' } },
+      h('img', { src: 'data:image/svg+xml,' + encodeURIComponent(document.querySelector('.logo svg').outerHTML.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"')), width: 64, height: 64, alt: '' }),
+      h('h3', { style: { margin: '8px 0 2px' } }, 'Inkstone'),
+      h('p', { className: 'muted', style: { margin: 0 } }, info ? `Version ${info.version}${info.portable ? ' (portable)' : ''}` : 'Web version'),
+      h('p', {}, 'A free, open source PDF editor. Your files stay on your computer.'),
+      h('p', { className: 'muted small' }, 'MIT license. Built with pdf.js, pdf-lib, Tesseract.js, signpdf, node-forge, docx and Lucide icons.'),
+      info ? h('p', { className: 'muted small' }, `Electron ${info.electron} · Chromium ${info.chrome}`) : null,
+      checkBtn, status),
     buttons: [{ label: 'Close', value: null, primary: true }],
   });
 }
@@ -1120,6 +1332,112 @@ export async function exportImages(app) {
   const zip = new JSZip();
   files.forEach((f) => zip.file(f.name, f.data));
   downloadBlob(await zip.generateAsync({ type: 'blob' }), `${name}_images.zip`, 'application/zip');
+}
+
+/**
+ * Export to Word: rebuild paragraphs from the PDF's text (lines joined, headings and
+ * bold/italic detected), with page images for scanned pages that have no text.
+ */
+export async function exportWord(app) {
+  const { value, form } = await dialog({
+    title: 'Export to Word',
+    body: `<p class="muted">Creates an editable .docx from the document's text. Simple documents convert well; complex layouts, tables and columns come out approximate.</p>
+      <div class="form-grid">${rangeRow()}
+      <label></label><label><input type="checkbox" name="images" checked> Include scanned pages as images</label>
+      <label></label><label><input type="checkbox" name="keepLines"> Keep the PDF's line breaks (don't reflow paragraphs)</label></div>`,
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Export', value: 'ok', primary: true }],
+    validate: rangeValidator(app),
+  });
+  if (!value) return;
+  const v = formValues(form);
+  const idx = parsePageRange(v.range, app.pageCount);
+  const D = await import('docx');
+  const pdf = await openPdf(await app.outputBytes());
+  const sections = [];
+  try {
+    for (const [n, i] of idx.entries()) {
+      setStatus(`Converting page ${n + 1} of ${idx.length}…`);
+      const page = await pdf.getPage(i + 1);
+      const vp = page.getViewport({ scale: 1 });
+      // Rendering loads the fonts (so their real names reveal bold/italic) and gives a page image for scans.
+      const { canvas } = await renderPageToCanvas(pdf, i, 1.5);
+      const tc = await page.getTextContent();
+      const fontStyle = (key) => {
+        let name = '';
+        try { name = page.commonObjs.get(key)?.name || ''; } catch { /* not loaded */ }
+        const st = E.styleFromFontName(name || tc.styles[key]?.fontFamily || '');
+        if (!name && /serif/i.test(tc.styles[key]?.fontFamily || '') && !/sans/i.test(tc.styles[key]?.fontFamily)) st.family = 'serif';
+        return st;
+      };
+      // Collect items in visual (top-left) coordinates, grouped into lines.
+      const items = tc.items.filter((it) => it.str?.trim()).map((it) => {
+        const [x, y] = vp.convertToViewportPoint(it.transform[4], it.transform[5]);
+        return { it, x, y, h: Math.hypot(it.transform[2], it.transform[3]), w: it.width, st: fontStyle(it.fontName) };
+      }).sort((a, b) => a.y - b.y || a.x - b.x);
+      const lines = [];
+      for (const t of items) {
+        const line = lines.find((l) => Math.abs(l.y - t.y) < Math.max(l.h, t.h) * 0.4);
+        if (line) { line.parts.push(t); line.h = Math.max(line.h, t.h); } else lines.push({ y: t.y, h: t.h, parts: [t] });
+      }
+      lines.forEach((l) => { l.parts.sort((a, b) => a.x - b.x); l.x = l.parts[0].x; });
+      lines.sort((a, b) => a.y - b.y);
+      const sizes = lines.map((l) => l.h).sort((a, b) => a - b);
+      const body = sizes[Math.floor(sizes.length / 2)] || 11;
+      const children = [];
+      const runsFor = (line) => line.parts.flatMap((t, k) => {
+        const prev = line.parts[k - 1];
+        const gap = prev ? t.x - (prev.x + prev.w) : 0;
+        const text = (prev && gap > t.h * 0.2 && !prev.it.str.endsWith(' ') && !t.it.str.startsWith(' ') ? ' ' : '') + t.it.str;
+        return [{ text, bold: t.st.bold, italics: t.st.italic, size: Math.round(t.h * 2), font: t.st.family === 'serif' ? 'Times New Roman' : t.st.family === 'mono' ? 'Courier New' : 'Arial' }];
+      });
+      // Merge lines into paragraphs unless there's a larger gap, an indent change or a size change.
+      let para = null;
+      const flush = () => {
+        if (!para) return;
+        const heading = para.h >= body * 1.6 ? D.HeadingLevel.HEADING_1 : para.h >= body * 1.25 ? D.HeadingLevel.HEADING_2 : undefined;
+        children.push(new D.Paragraph({
+          heading,
+          spacing: { after: Math.round(body * 6) },
+          children: para.runs.map((r) => (r.br ? new D.TextRun({ break: 1 }) : new D.TextRun({ text: r.text, bold: r.bold || undefined, italics: r.italics || undefined, size: heading ? undefined : r.size, font: heading ? undefined : r.font }))),
+        }));
+        para = null;
+      };
+      lines.forEach((line, k) => {
+        const prev = lines[k - 1];
+        const newPara = !para || !prev || line.y - prev.y > Math.max(line.h, prev.h) * 1.65 || Math.abs(line.h - prev.h) > body * 0.2 || Math.abs(line.x - prev.x) > body * 1.5;
+        if (newPara) { flush(); para = { h: line.h, runs: [] }; }
+        else if (v.keepLines) para.runs.push({ br: true });
+        else {
+          // Reflow: join with a space, or remove a hyphen that splits a word across lines.
+          const lastRun = para.runs[para.runs.length - 1];
+          if (lastRun && /[A-Za-z]-$/.test(lastRun.text)) lastRun.text = lastRun.text.slice(0, -1);
+          else if (lastRun && !lastRun.text.endsWith(' ')) lastRun.text += ' ';
+        }
+        para.runs.push(...runsFor(line));
+      });
+      flush();
+      const textChars = items.reduce((c, t) => c + t.it.str.length, 0);
+      if (v.images && textChars < 20) {
+        const png = await canvasToBytes(canvas, 'image/png');
+        const maxW = 600; // pixels at 96 dpi, about the printable width of a page
+        const w = Math.min(maxW, vp.width * (96 / 72)), hgt = w * (vp.height / vp.width);
+        children.push(new D.Paragraph({ children: [new D.ImageRun({ type: 'png', data: png, transformation: { width: w, height: hgt } })] }));
+      }
+      if (!children.length) children.push(new D.Paragraph({ children: [] }));
+      const twips = (pt) => Math.round(pt * 20);
+      sections.push({
+        properties: { page: { size: { width: twips(vp.width), height: twips(vp.height) }, margin: { top: 1080, bottom: 1080, left: 1080, right: 1080 } } },
+        children,
+      });
+    }
+  } finally {
+    pdf.destroy();
+    setStatus('');
+  }
+  const doc = new D.Document({ creator: 'Inkstone', title: baseName(app.state.fileName), sections });
+  const blob = await D.Packer.toBlob(doc);
+  downloadBlob(blob, `${baseName(app.state.fileName)}.docx`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  toast('Word document created');
 }
 
 export async function exportText(app) {

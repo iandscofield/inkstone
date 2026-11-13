@@ -1,0 +1,49 @@
+# Builds the Windows installers and publishes them as a GitHub Release when a
+# version tag (for example v1.1.0) is pushed. Installed copies of Inkstone check
+# these releases for updates.
+#
+# Optional code signing: add repository secrets CSC_LINK (base64 of your .pfx code
+# signing certificate) and CSC_KEY_PASSWORD. Without them the builds are unsigned.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check the tag matches package.json
+        shell: bash
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          if [ "$want" != "$GITHUB_REF_NAME" ]; then echo "Tag $GITHUB_REF_NAME does not match package.json version $want"; exit 1; fi
+
+      - name: Build and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          # Without a certificate, make sure electron-builder doesn't try to sign.
+          if [ -z "$CSC_LINK" ]; then unset CSC_LINK CSC_KEY_PASSWORD; fi
+          npx vite build
+          npx electron-builder --win nsis portable --publish always \
+            --config.publish.provider=github \
+            --config.publish.owner="${GITHUB_REPOSITORY%/*}" \
+            --config.publish.repo="${GITHUB_REPOSITORY#*/}" \
+            --config.publish.releaseType=release

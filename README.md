@@ -9,14 +9,14 @@ A free, open source PDF editor for Windows and the browser. Files are processed 
 | **View** | Several documents open at once in tabs. Continuous scroll, zoom (fit width, fit page, presets, Ctrl +/−), page thumbnails, clickable links, text selection, full-text search with highlights, dark mode |
 | **Organize pages** | Drag-and-drop reorder, rotate, delete, duplicate, insert blank pages, extract, split (every N pages or by ranges → .zip), combine/insert PDFs and images, reverse order, crop |
 | **Comment & mark up** | Text boxes, highlight / underline / strikeout (drag an area, or select text and press Ctrl+H), freehand drawing, rectangles, ellipses, lines, arrows, sticky-note comments, stamps (presets or custom, with optional name and date), images. **Markup stays editable**: it's visible in every PDF reader after you save, and when you reopen the file in Inkstone it comes back as objects you can move, change or delete |
-| **Edit** | Edit Text: click a line of existing text to replace it. White-out. Watermarks. Headers, footers and page numbers. Bates numbering. Add links to web pages or other pages, and remove them. Create and edit bookmarks (add, nest, rename, reorder, delete). Document properties |
+| **Edit** | **Edit Text**: click a line of existing text, change it, and the original text is removed from the page and rewritten in place. The size, color, bold/italic and closest standard font are detected automatically, and searching and copying use the new text. White-out. Watermarks. Headers, footers and page numbers. Bates numbering. Add links to web pages or other pages, and remove them. Create and edit bookmarks (add, nest, rename, reorder, delete). Document properties |
 | **Fill & sign** | Draw, type, or upload an image of your signature (white paper backgrounds are removed automatically), or reuse a saved one. Fill form fields. Create text fields, checkboxes, dropdowns and radio button groups. Manage fields: rename, mark required or read-only, edit choices, delete. Flatten forms |
 | **Review** | Compare with another version: a word-by-word report of what changed on each page, with added or changed words highlighted in the document |
 | **Redact** | Mark areas by hand, or use **Find & redact** with plain text or regular expressions (e.g. `\d{3}-\d{2}-\d{4}`). Applying redactions rasterizes the affected pages, so the content is permanently removed rather than just covered. It can also scrub hidden information: document properties, XMP metadata, attachments, scripts and automatic actions |
 | **Scan & OCR** | Recognize text in scanned pages (12 languages; English is built in and works offline). Adds an invisible text layer, so scans become searchable and selectable |
-| **Digital signatures** (desktop app) | Sign with a certificate (PKCS#7, `adbe.pkcs7.detached`): drag where the signature goes, and Inkstone draws a visible signature (your handwritten image, name, date, reason, location) and saves a signed copy. Additional signatures are appended so earlier ones stay valid. **Digital IDs**: create a self-signed ID, or import a `.pfx`/`.p12` from your organization or a certificate authority. Back up IDs, share the public certificate, delete. A **Signatures panel** checks every signature when a PDF opens: whether the document changed since signing, whether the signature matches the certificate, and whether the signer's identity chains to a trusted certificate authority. Saving changes to a signed file warns first, and an unchanged signed file is saved byte-for-byte |
+| **Digital signatures** (desktop app) | Sign with a certificate (PKCS#7, `adbe.pkcs7.detached`): drag where the signature goes, and Inkstone draws a visible signature (your handwritten image, name, date, reason, location) and saves a signed copy. Additional signatures are appended so earlier ones stay valid. **Trusted timestamps** (RFC 3161, from DigiCert's free timestamp server by default): only a fingerprint of the signature is sent, never the document. If the server can't be reached, the signature falls back to the computer's clock. **Digital IDs**: create a self-signed ID, or import a `.pfx`/`.p12` from your organization or a certificate authority. Back up IDs, share the public certificate, delete. A **Signatures panel** checks every signature when a PDF opens: whether the document changed since signing, whether the signature matches the certificate, and whether the signer's identity chains to a trusted certificate authority. Saving changes to a signed file warns first, and an unchanged signed file is saved byte-for-byte |
 | **Protect** | AES-256 password encryption with permission controls (printing, copying, editing, commenting, form filling, assembly). Opens password-protected PDFs. Remove security |
-| **Optimize & export** | Lossless optimization (removes unused objects, uses object streams) or strong lossy compression (JPEG rasterization). Export pages as PNG/JPEG. Export text. Print |
+| **Optimize & export** | Lossless optimization (removes unused objects, uses object streams) or strong lossy compression (JPEG rasterization). **Export to Word (.docx)**: paragraphs are rebuilt, headings, bold and italic are detected, and scanned pages become images. **Save as PDF/A-2b** for archiving: a preflight check, automatic fixes (XMP metadata, sRGB output intent, document ID, removing scripts, attachments and comments without a fixed appearance), and a re-check before saving a separate copy. Export pages as PNG/JPEG. Export text. Print |
 | **Productivity** | Undo/redo per document (up to 40 steps, capped at about 400 MB for large files), keyboard shortcuts, drag & drop files, Save in place, unsaved-changes warning |
 
 ## Getting started
@@ -57,7 +57,29 @@ Inkstone is also packaged as a desktop app with [Electron](https://www.electronj
 | `npm run dist:dir` | Build an unpacked app in `release/win-unpacked/` for quick testing |
 | `npm run icon` | Regenerate `build/icon.png` |
 
-The installers are **not code-signed**, so Windows SmartScreen will warn the first time you run them. Choose "More info → Run anyway", or sign the builds with your own certificate (see electron-builder's `win.certificateFile` option). The `package.json` `build` section also has macOS (dmg) and Linux (AppImage) targets, but you have to build them on those platforms.
+### Releases and automatic updates
+
+[.github/workflows/release.yml](.github/workflows/release.yml) builds the installers and publishes them as a GitHub Release whenever you push a version tag. To set it up:
+
+1. Create a GitHub repository and push this project to it.
+2. Bump `version` in `package.json` (for example, to `1.1.0`) and commit.
+3. Tag the commit with the same version and push the tag:
+
+   ```bash
+   git tag v1.1.0
+   ```
+
+   ```bash
+   git push origin v1.1.0
+   ```
+
+Installed copies check for updates a few seconds after starting. They download updates in the background, then show "Update ready — restart" in the status bar. You can also check from **Help → About & updates**. Portable copies don't update themselves. Local builds (`npm run dist`) have no update feed, so they report that updates aren't configured.
+
+### Code signing
+
+The installers are **not code-signed**, so Windows SmartScreen warns the first time someone runs them ("More info → Run anyway"). To sign them, buy a Windows code-signing certificate. Then add it to the GitHub repository as the secrets `CSC_LINK` (the `.pfx` file, base64-encoded) and `CSC_KEY_PASSWORD`. The release workflow signs automatically when those are present. For local signed builds, set the same two environment variables before running `npm run dist`.
+
+The `package.json` `build` section also has macOS (dmg) and Linux (AppImage) targets, but you have to build them on those platforms.
 
 In the desktop app, the page is served from a private `app://` scheme in a sandboxed, context-isolated window. A small preload bridge exposes only open, save and write, and it can only write to files you opened or chose in a Save dialog. Links in documents open in your normal browser.
 
@@ -103,19 +125,27 @@ electron/
 
 ## Known limitations
 
-- **Edit Text** covers the original run with white-out and places new text on top, in Helvetica. The original glyphs are still in the file underneath. To remove content for real, use redaction.
+- **Edit Text** limitations:
+  - It works one line at a time and doesn't reflow paragraphs.
+  - The replacement uses the closest standard font (Helvetica, Times or Courier), not the document's own embedded font.
+  - Text inside embedded graphics (form XObjects) can't be rewritten, so it's covered and replaced instead, and Inkstone tells you when this happens.
 - Markup made in other programs (for example, highlights from another PDF editor) is shown and listed in Comments, but it can't be edited as objects.
 - Compare checks text only, page by page. It doesn't detect formatting or image changes, or text that moved to a different page.
 - Applying redactions and strong compression turn the affected pages into images. Run OCR afterwards to make them searchable again.
 - OCR in languages other than English downloads that language's data the first time.
 - Digital signature limitations:
   - Signing is only available in the desktop app.
-  - Signatures use your computer's clock, not a trusted timestamp server.
+  - Timestamp tokens are checked against the signature, but the timestamp authority's own certificate chain isn't validated.
   - Only RSA certificates are supported.
   - Signatures added to an already-signed document have no visible stamp.
   - Self-signed IDs show as "identity not verified" to recipients unless they choose to trust your certificate.
   - "Trusted" means the certificate chains to a standard public certificate authority. It doesn't use the Windows certificate store or Adobe's trust list.
-- Not implemented yet: PDF/A conversion and export to Office formats.
+- **Export to Word** reconstructs text flow. Multi-column layouts, tables and floating images come out approximate. Images embedded in text pages aren't extracted; only fully scanned pages are included as images.
+- **PDF/A** limitations:
+  - Pages that use fonts not embedded in the file have to be converted to images.
+  - The color profile is a compact sRGB approximation.
+  - Inkstone runs its own checks. For formal certification, validate the output with a tool such as [veraPDF](https://verapdf.org).
+- Not implemented: converting Word/Excel files into PDF (that needs an office suite), and exporting to Excel.
 
 ## License
 
