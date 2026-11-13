@@ -1,6 +1,6 @@
 {
   "name": "inkstone",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Inkstone - a free, open source PDF editor: view, annotate, sign, fill forms, organize pages, OCR, protect",
   "scripts": {
     "dev": "vite",
