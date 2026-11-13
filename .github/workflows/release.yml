@@ -32,18 +32,36 @@ jobs:
           want="v$(node -p "require('./package.json').version")"
           if [ "$want" != "$GITHUB_REF_NAME" ]; then echo "Tag $GITHUB_REF_NAME does not match package.json version $want"; exit 1; fi
 
-      - name: Build and publish
+      - name: Build
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
           # Without a certificate, make sure electron-builder doesn't try to sign.
           if [ -z "$CSC_LINK" ]; then unset CSC_LINK CSC_KEY_PASSWORD; fi
           npx vite build
-          npx electron-builder --win nsis portable --publish always \
+          # The publish settings make electron-builder write the update feed (latest.yml);
+          # uploading is done in the next step so both installers go into one release.
+          npx electron-builder --win nsis portable --publish never \
             --config.publish.provider=github \
             --config.publish.owner="${GITHUB_REPOSITORY%/*}" \
-            --config.publish.repo="${GITHUB_REPOSITORY#*/}" \
-            --config.publish.releaseType=release
+            --config.publish.repo="${GITHUB_REPOSITORY#*/}"
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          files=(
+            "release/Inkstone-Setup-${version}.exe"
+            "release/Inkstone-Setup-${version}.exe.blockmap"
+            "release/Inkstone-Portable-${version}.exe"
+            "release/latest.yml"
+          )
+          for f in "${files[@]}"; do [ -f "$f" ] || { echo "Missing $f"; exit 1; }; done
+          if ! gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --title "Inkstone ${version}" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
